@@ -24,5 +24,4 @@ mcp.local.json
 Thumbs.db
 *.log
 
-# 过程测试脚本统一存放并排除发布
-/tests/
+# 可复现回归测试随源码保存；测试生成的原生工程与报告放在 artifacts/ 或 projects/。

@@ -6,7 +6,7 @@ $taskFramework='C:\Windows\Microsoft.NET\Framework\v4.0.30319'
 New-Item -ItemType Directory -Force -Path $taskDestination | Out-Null
 Push-Location $PSScriptRoot
 try {
- & "$taskFramework\csc.exe" /nologo /target:library /platform:x86 /out:artifacts\FStudioMcp.Visible.dll "/r:$taskBin\ICSharpCode.Core.dll" /r:System.Core.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll "/r:$taskFramework\WPF\WindowsBase.dll" "/r:$taskFramework\WPF\PresentationCore.dll" "/r:$taskFramework\WPF\PresentationFramework.dll" src\VisibleHost.cs src\LiveModels.cs src\ProjectCreation.cs src\NativeDrawing.cs src\BackgroundBuild.cs src\BuildLogCapture.cs src\NativePages.cs
+ & "$taskFramework\csc.exe" /nologo /target:library /platform:x86 /out:artifacts\FStudioMcp.Visible.dll "/r:$taskBin\ICSharpCode.Core.dll" /r:System.Core.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll "/r:$taskFramework\WPF\WindowsBase.dll" "/r:$taskFramework\WPF\PresentationCore.dll" "/r:$taskFramework\WPF\PresentationFramework.dll" src\VisibleHost.cs src\LiveModels.cs src\ProjectCreation.cs src\NativeDrawing.cs src\BatchDrawing.cs src\BackgroundBuild.cs src\BuildLogCapture.cs src\NativePages.cs
  if($LASTEXITCODE -ne 0){throw 'Visible host build failed'}
  $taskLoadedDestination=Join-Path $taskDestination 'FStudioMcp.Visible.dll'
  try {
@@ -18,7 +18,11 @@ try {
   Copy-Item -LiteralPath 'artifacts\FStudioMcp.Visible.dll' -Destination $taskPending -Force
   @{status='pending_host_restart';source=(Join-Path $PSScriptRoot 'artifacts\FStudioMcp.Visible.dll');destination=$taskLoadedDestination;staged=$taskPending;sha256=(Get-FileHash -LiteralPath $taskPending -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskDestination 'pending-update.json') -Encoding utf8
  }
- @{workspace=(Join-Path $PSScriptRoot 'projects');state_directory=(Join-Path $PSScriptRoot 'artifacts\visible-host')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskDestination 'host-settings.json') -Encoding utf8
+ # 更新 DLL 时保留现有工作区和端点目录，避免升级后误连默认工程目录。
+ $taskSettingsPath=Join-Path $taskDestination 'host-settings.json'
+ if(-not (Test-Path -LiteralPath $taskSettingsPath)) {
+  @{workspace=(Join-Path $PSScriptRoot 'projects');state_directory=(Join-Path $PSScriptRoot 'artifacts\visible-host')} | ConvertTo-Json | Set-Content -LiteralPath $taskSettingsPath -Encoding utf8
+ }
  @'
 <AddIn name="FStudio MCP Visible Host" author="Local MCP" description="Local visible MCP bridge">
  <Runtime><Import assembly="FStudioMcp.Visible.dll" /></Runtime>

@@ -67,11 +67,15 @@ class VisibleHost:
         return result['data']
 
     def read(self, op, **args):
+        """优先消费首次应答中的终态；未完成时只查询原任务，绝不重发操作。"""
         job = self.request(op,**args)
         deadline = time.monotonic()+5
-        while time.monotonic()<deadline:
-            result = self.request('job',job_id=job['job_id'])
-            if result['status']=='completed': return result['result']
-            if result['status']=='failed': raise RuntimeError(result['error'])
-            time.sleep(.1)
-        return job
+        while True:
+            if job['status']=='completed': return job['result']
+            if job['status']=='failed': raise RuntimeError(job['error'])
+            # 先消费刚收到的终态，再检查观察期限，避免边界时刻把成功误报超时。
+            if time.monotonic()>=deadline:
+                return job
+            job = self.request('job',job_id=job['job_id'])
+            if job['status'] not in ('completed','failed'):
+                time.sleep(.1)

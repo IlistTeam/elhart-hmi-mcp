@@ -64,6 +64,44 @@ namespace FStudioMcp {
    if(Member(setting,"RecipeCommonSetting")==null)NativeSet(setting,"RecipeCommonSetting",Activator.CreateInstance(Native(prefix+"RecipeCommonSettingData"),new object[]{languageId,format}));
    if(Member(setting,"RecipeItemSettingList")==null)NativeSet(setting,"RecipeItemSettingList",Activator.CreateInstance(Native(prefix+"RecipeItemSettingDataList"),new object[]{languages,format}));
   }
+  /// <summary>用原生工具创建完整草稿；静态文字批量通路直接初始化语言数据，避免无窗口的属性面板留下全局状态。</summary>
+  static DrawingDraft CreateDrawingDraft(Dictionary<string,object>a,object page,object context,bool batch=false){
+    var type=Native(S(a,"tool"));
+    if(type.Namespace!="Flexem.Studio.GraphicsDesigner.Tools"||type.IsAbstract||type.ContainsGenericParameters||!type.Name.EndsWith("Tool"))throw new ArgumentException("Expected a concrete native drawing tool");
+    // 此版本窗口选择器的 Child_Fetch 在载入 PagingAddress 前调用 OnFetching/Init，触发空引用。
+    // 在创建草稿前拒绝，避免把无法再次打开的控件写入用户工程；未来版本不套用此限制。
+    if(type.Name=="WindowSelectorTool"&&type.Assembly.GetName().Version.ToString()=="3.0.15685.0")
+     throw new NotSupportedException("NATIVE_UNSUPPORTED: WindowSelectorTool in FStudio 3.0.15685.0 accesses PagingAddress before deserialization and prevents project reopening; draft creation was refused to preserve the project");
+    var tool=Activator.CreateInstance(type);
+    // 工具钩子需要当前设计上下文，但 Activate 会打开属性面板，因此只注入已有上下文。
+    for(var baseType=type;baseType!=null;baseType=baseType.BaseType)foreach(var field in baseType.GetFields(BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public|BindingFlags.DeclaredOnly)){
+     if(field.FieldType.FullName=="ICSharpCode.WpfDesign.DesignContext")field.SetValue(tool,context);
+     if(field.FieldType.FullName=="ICSharpCode.WpfDesign.IDesignPanel")field.SetValue(tool,Member(Member(context,"Services"),"DesignPanel"));
+    }
+    if(a.ContainsKey("tool_properties"))foreach(var p in (Dictionary<string,object>)a["tool_properties"])NativeSet(tool,p.Key,p.Value);
+    var create=ToolHook(tool,"CreateModel",0);if(create==null)throw new ArgumentException("Native tool has no model creation hook");
+    var model=create.Invoke(tool,new object[0]);
+    object vm;
+    try{
+     var project=Member(Resolve("Flexem.Studio.Hmi.Project.IHmiProjectService"),"CurrentProject");
+     if(!(bool)Member(model,"IsReferenced"))CallNative(model,"EnableReference",project);
+     InitializeDrawingModel(model);
+     var createVm=ToolHook(tool,"CreateViewModel",1);
+     // 基础几何模型自行初始化属性，无需调用属性面板工厂。
+     bool basicShape=new[]{"LineTool","PolyLineTool","PolygonTool","RectangleTool","EllipseTool","ArcTool","SectorTool","SectorRingTool"}.Contains(tool.GetType().Name);
+     // 批量文字在 ConfigureBatchText 中使用原生语言/字体工厂补全；省去面板视图模型的文本库扫描与事件订阅。
+     vm=basicShape||(batch&&type.Name=="StaticTextTool")?null:createVm==null?Native("Flexem.Studio.GraphicsDesigner.PropertyViewModelFactory").GetMethod("GetViewModel",BindingFlags.Public|BindingFlags.Static).Invoke(null,new object[]{model}):createVm.Invoke(tool,new object[]{model});
+     // SettingFirstCreateComponentTool 的默认 CreateViewModel 返回 null；原生 ShowSetting 此时回退到工厂。
+     // 批量数值输入等工具的 BeforeShowSetting 依赖真正的属性视图模型；旧 prepare 不调用此钩子，保留其原有返回语义。
+     if(batch&&vm==null&&!basicShape&&type.Name!="StaticTextTool")vm=Native("Flexem.Studio.GraphicsDesigner.PropertyViewModelFactory").GetMethod("GetViewModel",BindingFlags.Public|BindingFlags.Static).Invoke(null,new object[]{model});
+    }catch(Exception error){
+     // 草稿尚未登记，客户端无法显式丢弃；此处释放失败初始化建立的项目引用。
+     try{if((bool)Member(model,"IsReferenced"))CallNative(model,"DisableReference");}
+     catch(Exception cleanup){throw new AggregateException("Native draft initialization and reference cleanup failed",error,cleanup);}
+     throw;
+    }
+   return new DrawingDraft{Model=model,ViewModel=vm,Tool=tool,Page=page};
+  }
   static object ConfigureLocalAddress(Dictionary<string,object>a,object view) {
    var address=Ref(a);string type=address.GetType().FullName;
    bool legacy=type=="Flexem.Studio.Models.HMI.AddressInfo";
@@ -171,6 +209,8 @@ namespace FStudioMcp {
   /// <exception cref="InvalidOperationException">页面、草稿或原生模板状态不满足操作条件。</exception>
   static object DrawingOperation(Dictionary<string,object>a){
    var op=S(a,"op");var view=DesignerView();var page=Member(view,"Model");var context=Member(view,"DesignContext");
+   if(op=="drawing_snapshot")return DrawingSnapshot(a,view,page);
+   if(op=="drawing_create_many")return DrawingCreateMany(a,view,page,context);
    if(op=="drawing_show_canvas")return ShowCanvasWithoutActivation();
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
@@ -178,43 +218,17 @@ namespace FStudioMcp {
    if(op=="drawing_configure_trend")return ConfigureTrendSampling(a,view);
    if(op=="drawing_remove_graphic")return RemoveCanvasGraphic(a,view,page);
    if(op=="drawing_prepare"){
-    var type=Native(S(a,"tool"));
-    if(type.Namespace!="Flexem.Studio.GraphicsDesigner.Tools"||type.IsAbstract||type.ContainsGenericParameters||!type.Name.EndsWith("Tool"))throw new ArgumentException("Expected a concrete native drawing tool");
-    // 此版本窗口选择器的 Child_Fetch 在载入 PagingAddress 前调用 OnFetching/Init，触发空引用。
-    // 在创建草稿前拒绝，避免把无法再次打开的控件写入用户工程；未来版本不套用此限制。
-    if(type.Name=="WindowSelectorTool"&&type.Assembly.GetName().Version.ToString()=="3.0.15685.0")
-     throw new NotSupportedException("NATIVE_UNSUPPORTED: WindowSelectorTool in FStudio 3.0.15685.0 accesses PagingAddress before deserialization and prevents project reopening; draft creation was refused to preserve the project");
-    var tool=Activator.CreateInstance(type);
-    // Native tool hooks require the current design context; Activate opens property UI.
-    for(var baseType=type;baseType!=null;baseType=baseType.BaseType)foreach(var field in baseType.GetFields(BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public|BindingFlags.DeclaredOnly)){
-     if(field.FieldType.FullName=="ICSharpCode.WpfDesign.DesignContext")field.SetValue(tool,context);
-     if(field.FieldType.FullName=="ICSharpCode.WpfDesign.IDesignPanel")field.SetValue(tool,Member(Member(context,"Services"),"DesignPanel"));
-    }
-    if(a.ContainsKey("tool_properties"))foreach(var p in (Dictionary<string,object>)a["tool_properties"])NativeSet(tool,p.Key,p.Value);
-    var create=ToolHook(tool,"CreateModel",0);if(create==null)throw new ArgumentException("Native tool has no model creation hook");
-    var model=create.Invoke(tool,new object[0]);
-    var project=Member(Resolve("Flexem.Studio.Hmi.Project.IHmiProjectService"),"CurrentProject");
-    if(!(bool)Member(model,"IsReferenced"))CallNative(model,"EnableReference",project);
-    object vm;
-    try{
-     InitializeDrawingModel(model);
-     var createVm=ToolHook(tool,"CreateViewModel",1);
-     // 基础几何模型自行初始化属性，无需调用属性面板工厂。
-     bool basicShape=new[]{"LineTool","PolyLineTool","PolygonTool","RectangleTool","EllipseTool","ArcTool","SectorTool","SectorRingTool"}.Contains(tool.GetType().Name);
-     vm=basicShape?null:createVm==null?Native("Flexem.Studio.GraphicsDesigner.PropertyViewModelFactory").GetMethod("GetViewModel",BindingFlags.Public|BindingFlags.Static).Invoke(null,new object[]{model}):createVm.Invoke(tool,new object[]{model});
-    }catch{
-     // 草稿尚未登记，客户端无法显式丢弃；此处释放失败初始化建立的项目引用。
-     if((bool)Member(model,"IsReferenced"))CallNative(model,"DisableReference");
-     throw;
-    }
-    var id=Guid.NewGuid().ToString("N");var createdDraft=new DrawingDraft{Model=model,ViewModel=vm,Tool=tool,Page=page};drawingDrafts[id]=createdDraft;
-    return Obj("draft_id",id,"model",DescribeOwned(model,createdDraft),"view_model",DescribeOwned(vm,createdDraft),"tool",Describe(tool),"canvas_changed",false);
+    var createdDraft=CreateDrawingDraft(a,page,context);
+    var id=Guid.NewGuid().ToString("N");drawingDrafts[id]=createdDraft;
+    return Obj("draft_id",id,"model",DescribeOwned(createdDraft.Model,createdDraft),"view_model",DescribeOwned(createdDraft.ViewModel,createdDraft),"tool",Describe(createdDraft.Tool),"canvas_changed",false);
    }
    DrawingDraft draft;string draftId=S(a,"draft_id");if(!drawingDrafts.TryGetValue(draftId,out draft))throw new ArgumentException("Unknown or expired drawing draft");
    if(!Object.ReferenceEquals(draft.Page,page))throw new InvalidOperationException("Draft belongs to a different page; reopen its original page");
    // 插入失败的原生回滚可能已释放引用；仅释放仍有效的引用，确保失败草稿也能清理。
-   if(op=="drawing_discard"){if((bool)Member(draft.Model,"IsReferenced"))CallNative(draft.Model,"DisableReference");drawingDrafts.Remove(draftId);return Obj("discarded",true,"canvas_changed",false);}
+   if(op=="drawing_discard"){if((bool)Member(draft.Model,"IsReferenced"))CallNative(draft.Model,"DisableReference");drawingDrafts.Remove(draftId);ClearScopeHandles(draft);return Obj("discarded",true,"canvas_changed",false);}
    if(op!="drawing_commit")throw new ArgumentException("Unknown drawing operation");
+   // 草稿可能早于其他创建请求，同类型编号在正式登记前重新核对，避免旧草稿与新批次编号相撞。
+   AllocateBatchComponentIds(new List<BatchWidget>{new BatchWidget{Draft=draft}},context);
    var position=Member(draft.Model,"Position");
    foreach(var p in new[]{"X","Y","Width","Height"}){double value=Convert.ToDouble(a[p.ToLowerInvariant()]);if(Double.IsNaN(value)||Double.IsInfinity(value)||value<0||(p=="Width"||p=="Height")&&value==0)throw new ArgumentException("Invalid widget bounds");NativeSet(position,p,value);}
    // Modern components derive their display name from type/id. Comment is their
@@ -225,7 +239,7 @@ namespace FStudioMcp {
    var extensionManager=Member(Member(context,"Services"),"ExtensionManager");
    var viewType=(Type)Member(draft.Model,"ViewType");var component=CallNative(extensionManager,"CreateInstanceWithCustomInstanceFactory",viewType,null);
    var item=CallNative(DesignerService(context,"ICSharpCode.WpfDesign.IComponentService"),"RegisterComponentForDesigner",component);
-   var group=CallNative(item,"OpenGroup","MCP: "+S(a,"name"));object placement=null;
+   var group=CallNative(item,"OpenGroup","MCP: "+S(a,"name"));object placement=null;Dictionary<string,object> committedResult=null;
    try{
     CallNative(extensionManager,"ApplyDefaultInitializers",item);
     // Sliding 的绑定器立即访问模板子控件；原生鼠标绘制会先应用模板，后台创建也必须完成此步骤。
@@ -245,13 +259,25 @@ namespace FStudioMcp {
     var addItem=Native("ICSharpCode.WpfDesign.PlacementType").GetField("AddItem").GetValue(null);
     placement=Native("ICSharpCode.WpfDesign.PlacementOperation").GetMethod("TryStartInsertNewComponents").Invoke(null,new object[]{root,items,new Rect[]{rect},addItem});
     if(placement==null)throw new InvalidOperationException("Native designer rejected the insertion bounds");
-    CallNative(placement,"Commit");CallNative(group,"Commit");
-   }catch{if(placement!=null)CallNative(placement,"Abort");CallNative(group,"Abort");throw;}
-   // Do not select/locate the item: SelectGraphics(showSetting:true, ...) opens native UI.
-   // The designer updates through native bindings without focus, selection, or drag input.
+    CallNative(placement,"Commit");
+    // 在仍可回滚时完成句柄分配与原生回读，避免创建成功后因句柄上限或 getter 报错而返回失败。
+    committedResult=Obj("draft_id",draftId,"model",DescribeOwned(draft.Model,draft),"design_item",DescribeOwned(item,draft),"name",S(a,"name"),"name_storage","native_Comment","display_name",Member(draft.Model,"DisplayName"),"canvas_changed",true,"dirty",null,"project",ProjectFile());
+    CallNative(group,"Commit");
+   }catch(Exception error){
+    // placement.Commit 之后组提交仍可能失败；已完成的 placement 不能再次 Abort，否则会掩盖首错并跳过外层回滚。
+    var failures=new List<Exception>{error};
+    if(placement!=null)try{if(!(bool)Member(placement,"IsCommitted")&&!(bool)Member(placement,"IsAborted"))CallNative(placement,"Abort");}catch(Exception rollback){failures.Add(rollback);}
+    try{CallNative(group,"Abort");}catch(Exception rollback){failures.Add(rollback);}
+    if(failures.Count>1)throw new AggregateException("Native insertion failed and rollback was incomplete",failures);
+    throw;
+   }
+   // 不选择或定位控件；画布通过原生绑定更新，不打开属性窗口或抢占焦点。
    draft.CommittedView=view;
    drawingDrafts.Remove(draftId);
-   return Obj("draft_id",draftId,"model",DescribeOwned(draft.Model,view),"design_item",DescribeOwned(item,view),"name",S(a,"name"),"name_storage","native_Comment","display_name",Member(draft.Model,"DisplayName"),"canvas_changed",true,"dirty",Member(view,"IsDirty"),"project",ProjectFile());
+   foreach(var id in refViews.Where(x=>Object.ReferenceEquals(x.Value,draft)).Select(x=>x.Key).ToArray())refViews[id]=view;
+   try{committedResult["dirty"]=Member(view,"IsDirty");}
+   catch(Exception diagnostic){committedResult["warnings"]=new[]{"创建已提交，但未能读取页面修改状态："+diagnostic.Message};}
+   return committedResult;
   }
  }
 }

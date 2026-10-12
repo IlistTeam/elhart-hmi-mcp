@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from visible_host import VisibleHost
 from isolated_build_manager import IsolatedBuildManager
+from canvas_spec import expand_widgets
 
 HERE = Path(__file__).resolve().parent
 NAMESPACE = '{http://schemas.flexem.com/fs/model/1}'
@@ -106,8 +107,8 @@ TOOLS += [
     tool('fstudio_visible_output','Read native FStudio output categories including compiler messages.',schema()),
     tool('fstudio_visible_close_project','Close the active workspace project through background native services. While any open view is dirty the host refuses before calling native close, because the native save-changes dialog cannot be answered in background mode and the close job then never returns. Save first, or set discard_unsaved=true to skip the native window check and drop unsaved canvas changes.',schema({'discard_unsaved':{'type':'boolean'}}),False),
     tool('fstudio_model_inspect','Inspect native object properties and exact callable method signatures using a $ref from visible_state/model_get. Handles expire when the project is reopened.',schema({'ref':STR},['ref'])),
-    tool('fstudio_model_get','Read one public native object member, collection item, or 100-item collection page. Complex objects return $ref handles. Omit member to inspect the referenced collection.',schema({'ref':STR,'member':STR,'index':{'type':'integer','minimum':0},'offset':{'type':'integer','minimum':0}},['ref'])),
-    tool('fstudio_model_set','Set a permitted public native model property in the background. value is a scalar or a compatible {$ref:...}; the host rejects UI-object or interactive property paths. Prefer model_set_many for related position/size/property edits. Save the project to persist; inspect asynchronous job result.',schema({'ref':STR,'member':STR,'value':{}},['ref','member','value']),False),
+    tool('fstudio_model_get','读取一个公开模型属性、集合项或最多100项的集合页。member支持Position.Width等点路径；复杂值返回本会话$ref。省略member可读取句柄本身的集合；多个已知属性优先model_get_many。',schema({'ref':STR,'member':STR,'index':{'type':'integer','minimum':0},'offset':{'type':'integer','minimum':0}},['ref'])),
+    tool('fstudio_model_set','后台修改一个允许写入的公开模型属性，member支持点路径。value为标量或兼容$ref；逐层拒绝UI对象与交互目标。关联修改优先model_set_many；保存工程后持久化，检查任务终态。',schema({'ref':STR,'member':STR,'value':{}},['ref','member','value']),False),
     tool('fstudio_model_call','Call a permitted inspected public native model method in the background. Use exact signature for overloads, arguments as scalars or {$ref:...}. UI-object and interactive methods are blocked by the host. Returns asynchronous job ID; generic access does not make all native methods callable or verified.',schema({'ref':STR,'method':STR,'signature':{'type':'string'},'arguments':{'type':'array','items':{},'maxItems':50}},['ref','method']),False),
     tool('fstudio_model_create','Call a native model CreateAsChild/Create/CreateNew factory on a loaded Flexem.Studio type. Returns a handle via a job; add the model to the appropriate native collection/service afterward.',schema({'type':STR,'method':{'type':'string','enum':['CreateAsChild','Create','CreateNew']},'signature':{'type':'string'},'arguments':{'type':'array','items':{},'maxItems':50}},['type','method']),False),
     tool('fstudio_model_set_many','Set 1 to 100 permitted native properties as one background batch. Obtain scoped handles from canvas_state or canvas_prepare; all targets must belong to the same page or draft, with no duplicate property. The host prevalidates properties and conversions. Attached pages use one native undo transaction; uncommitted drafts restore prior values on failure. Returns a host job with results (ref/member/value), native_undo_transaction and persistence; rollback failures are reported. Update position, size and related properties together without stepwise movement or property dialogs.',schema({'changes':{'type':'array','minItems':1,'maxItems':100,'items':schema({'ref':STR,'member':STR,'value':{}},['ref','member','value'])}},['changes']),False),
@@ -148,6 +149,42 @@ TOOLS += [
     tool('fstudio_page_copy','Copy a non-reserved Basic page within the active project, using its current designer model if open. Deep-copies native DTO data and refreshes page and nested graphics UUIDs; external resource, address and page references are preserved. The saved copy is registered without automatically opening it. Returns an asynchronous job with page metadata and refreshed_identities.',schema({'uuid':PAGE_UUID,'name':PAGE_NAME},['uuid','name']),False),
     tool('fstudio_page_delete','Delete a non-reserved Basic page by UUID through the background native API without a confirmation dialog. Backs up its file and, when open, current model; protects the last Basic page, startup/home, active screensaver and special pages. Returns an asynchronous job with confirmed deletion and backup path.',schema({'uuid':PAGE_UUID},['uuid']),False),
 ]
+# 新工具保留原来的逐控件入口，调用方可以按当前宿主能力选择通路。
+# 点路径是公开属性名组成的路径，不接受索引表达式或任意代码。
+MEMBER_PATH = {'type': 'string', 'minLength': 1, 'maxLength': 512,
+               'pattern': r'^[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_][A-Za-z_0-9]*){0,15}$'}
+PROPERTY_VALUE = schema({'member': MEMBER_PATH, 'value': {}}, ['member', 'value'])
+MODEL_READ = schema({'ref': STR, 'member': MEMBER_PATH,
+                     'index': {'type': 'integer', 'minimum': 0},
+                     'offset': {'type': 'integer', 'minimum': 0}}, ['ref'])
+CANVAS_STYLE = schema({'font_size': {'type': 'number', 'minimum': 8, 'maximum': 120},
+                       'color': {'type': 'string', 'pattern': '^#[0-9A-Fa-f]{8}$'},
+                       'bold': {'type': 'boolean'}, 'font_name': STR})
+CANVAS_PRESET_FIELDS = {
+    'tool': STR,
+    'tool_properties': {'type': 'object', 'maxProperties': 20, 'additionalProperties': {}},
+    'properties': {'type': 'array', 'maxItems': 60, 'items': PROPERTY_VALUE},
+    'local_addresses': {'type': 'array', 'maxItems': 8, 'items': schema({
+        'member': MEMBER_PATH, 'address': {'type': 'integer', 'minimum': 0, 'maximum': 4294967295}
+    }, ['member', 'address'])},
+    'text': {'type': 'string', 'maxLength': 4096}, 'text_style': CANVAS_STYLE,
+}
+CANVAS_WIDGET = schema(dict(CANVAS_PRESET_FIELDS, name=KEY, preset=KEY, x=NUM, y=NUM,
+    width={'type': 'number', 'minimum': 1, 'maximum': 16384},
+    height={'type': 'number', 'minimum': 1, 'maximum': 16384}), ['name', 'x', 'y', 'width', 'height'])
+TOOLS += [
+    tool('fstudio_model_get_many', '一次读取 1..100 个原生公开属性或集合页，支持 Position.Width 等点路径；复杂值返回本会话句柄，不缓存属性值。用于已知属性回读。',
+         schema({'reads': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': MODEL_READ}}, ['reads'])),
+    tool('fstudio_model_apply_many', '将同一组点路径属性应用到同页或同草稿的多个句柄。展开后最多 100 项；先校验全部目标，使用一个原生撤销事务，失败回滚。保存工程后持久化。',
+         schema({'refs': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': STR},
+                 'properties': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': PROPERTY_VALUE}}, ['refs', 'properties']), False),
+    tool('fstudio_canvas_snapshot', '紧凑回读当前 Basic 业务页顶层控件的名称、UUID、句柄、类型和实际边界。可用 page_uuid 防止读错页，names 精确筛选并报告缺失/重名。按 next_offset 分页；不包含继承的公共页、不展开组，不等于截图或运行验收。',
+         schema({'page_uuid': PAGE_UUID, 'names': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': KEY},
+                 'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}})),
+    tool('fstudio_canvas_create_many', '在当前 Basic 业务页一次创建 1..30 个原生控件；先配置完整草稿，再用一个原生撤销组批量插入。支持样式预设、点路径 properties、本地地址、StaticTextTool 的 text/text_style；StaticTextTool必须提供非空白text，properties和tool_properties值仅支持标量。名称和边界须逐项填写。拒绝重名；只创建不是 upsert，超时查询同一 job_id，不能重复提交。检查实际边界与 bounds_adjusted，保存后再验证重开/编译。',
+         schema({'page_uuid': PAGE_UUID, 'widgets': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': CANVAS_WIDGET},
+                 'presets': {'type': 'object', 'maxProperties': 20, 'additionalProperties': schema(CANVAS_PRESET_FIELDS)}}, ['widgets']), False),
+]
 BY_NAME = {t['name']: t for t in TOOLS}
 
 
@@ -167,6 +204,8 @@ def validate(value, spec, at='arguments'):
     if 'enum' in spec and value not in spec['enum']:
         raise ValueError(f'{at}: value is not supported')
     if isinstance(value, dict):
+        if not spec.get('minProperties', 0) <= len(value) <= spec.get('maxProperties', 1000000):
+            raise ValueError(f'{at}: invalid object property count')
         for key in spec.get('required', []):
             if key not in value: raise ValueError(f'{at}.{key}: required')
         properties = spec.get('properties', {})
@@ -466,6 +505,32 @@ class FStudio:
     def model_set_many(self, changes):
         return self.visible.request('set_members', changes=changes)
 
+    def model_get_many(self, reads):
+        """一次提交独立读取，由宿主在同一个 UI 调度中取得当前值。"""
+        return self.visible.read('read_members', reads=reads)
+
+    def model_apply_many(self, refs, properties):
+        """提前限制展开量，宿主再检查实际对象归属、别名重复及属性转换。"""
+        if len(set(refs)) != len(refs):
+            raise ValueError('Duplicate model reference')
+        if len(refs) * len(properties) > 100:
+            raise ValueError('Expanded batch exceeds 100 properties')
+        return self.visible.request('apply_members', refs=refs, properties=properties)
+
+    def canvas_snapshot(self, **args):
+        """紧凑读取布局；返回实际原生尺寸，供生成结果核对及增量修改。"""
+        return self.visible.read('drawing_snapshot', **args)
+
+    def canvas_create_many(self, widgets, presets=None, page_uuid=None):
+        """先在本地展开声明并复验，再只提交一次有副作用的宿主操作。"""
+        expanded = expand_widgets(widgets, presets)
+        for widget in expanded:
+            validate(widget, CANVAS_WIDGET)
+        args = {'widgets': expanded}
+        if page_uuid is not None:
+            args['page_uuid'] = page_uuid
+        return self.visible.request('drawing_create_many', **args)
+
     def model_call(self, **args):
         return self.visible.request('invoke_method', **args)
 
@@ -650,14 +715,19 @@ class FStudio:
         if not isinstance(job, dict) or 'job_id' not in job:
             return job
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            state = self.visible.request('job', job_id=job['job_id'])
+        while True:
+            # 快任务的首次应答已携带终态，直接消费，避免额外管道往返。
+            state = job
             if state.get('status') == 'completed':
                 return state.get('result')
             if state.get('status') == 'failed':
                 raise RuntimeError(state.get('error') or 'native job failed')
+            if time.monotonic() >= deadline:
+                raise RuntimeError('native job still pending: ' + str(job.get('job_id')))
+            job = self.visible.request('job', job_id=job['job_id'])
+            if job.get('status') in ('completed', 'failed'):
+                continue
             time.sleep(0.2)
-        raise RuntimeError('native job still pending: ' + str(job.get('job_id')))
 
     def build_start(self):
         state=self.visible.read('state')
@@ -910,8 +980,8 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'fstudio-dll-mcp','version':'0.3.0'},
-                          'instructions':'FStudio background native-model operations with canvas result updates, no property dialogs or mouse dragging. Prefer canvas_prepare, model_get/model_set_many, then canvas_commit; discard unused drafts. Use pages_list and page_* for non-reserved Basic pages. Save before build_start; use its returned build_id, then build_status and compiler_success. visible_run_command is disabled with BACKGROUND_ONLY. Generic model methods are host-filtered. Native roundtrip checks do not mean compilation or hardware verification. Close the target project only before offline DTO/file edits; keep it open for native model/canvas/page/build operations.'}
+                          'serverInfo': {'name':'fstudio-dll-mcp','version':'0.4.0'},
+                          'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
             elif method == 'tools/list': result = {'tools': TOOLS}

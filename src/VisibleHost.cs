@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -24,6 +25,8 @@ namespace FStudioMcp {
   static readonly object gate=new object();
   static readonly Dictionary<string,Dictionary<string,object>> jobs=new Dictionary<string,Dictionary<string,object>>();
   static Dictionary<string,Type> commands;
+  // 仅缓存已经加载的类型元数据；查找失败不缓存，允许 FStudio 后续加载插件。
+  static readonly ConcurrentDictionary<string,Type> nativeTypes=new ConcurrentDictionary<string,Type>(StringComparer.Ordinal);
   static string workspace, stateDir, pipeName;
   static Dictionary<string,object> Obj(params object[] values) {var d=new Dictionary<string,object>();for(int i=0;i<values.Length;i+=2)d[(string)values[i]]=values[i+1];return d;}
   static string S(Dictionary<string,object> a,string key) {return Convert.ToString(a[key]);}
@@ -36,12 +39,17 @@ namespace FStudioMcp {
    stateDir=Path.GetFullPath(S(config,"state_directory"));Directory.CreateDirectory(stateDir);
    pipeName="fstudio-mcp-"+Process.GetCurrentProcess().Id;
    Log("宿主接口已启动。后台执行，仅原生画布显示绘图变化。");
-   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.3.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
+   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.4.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
-  static Type Native(string name) {foreach(var a in AppDomain.CurrentDomain.GetAssemblies()){var t=a.GetType(name,false);if(t!=null)return t;}throw new ArgumentException("Native type not loaded: "+name);}
+  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
+  /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
+  static Type Native(string name) {
+   Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
+   foreach(var a in AppDomain.CurrentDomain.GetAssemblies()){var t=a.GetType(name,false);if(t!=null){nativeTypes[name]=t;return t;}}
+   throw new ArgumentException("Native type not loaded: "+name);
+  }
   static object ProjectService(string method,params object[] args) {return Native("Flexem.Studio.Project.FsProjectService").GetMethod(method,BindingFlags.Public|BindingFlags.Static).Invoke(null,args);}
   static object CurrentProject() {return Native("Flexem.Studio.Project.FsProjectService").GetProperty("CurrentProject").GetValue(null,null);}
   static string ProjectFile() {var p=CurrentProject();return p==null?null:Convert.ToString(p.GetType().GetProperty("FileName").GetValue(p,null));}
@@ -76,7 +84,7 @@ namespace FStudioMcp {
    if(op=="output")return Output();
    if(op.StartsWith("drawing_"))return DrawingOperation(a);
    if(op=="create_project")return CreateProject(a);
-   if(op=="inspect_object"||op=="read_member"||op=="set_member"||op=="set_members"||op=="invoke_method"||op=="native_factory")return ModelOperation(a);
+   if(op=="inspect_object"||op=="read_member"||op=="read_members"||op=="set_member"||op=="set_members"||op=="apply_members"||op=="invoke_method"||op=="native_factory")return ModelOperation(a);
    if(op=="commands"){commands=null;return Obj("commands",Commands().OrderBy(x=>x.Key).Select(x=>Obj("command",x.Key,"assembly",x.Value.Assembly.GetName().Name,"status","discovered_not_executed")).ToArray());}
    // 在调用原生打开服务之前校验目录，超长路径不会创建无法应答的模态窗口。
    if(op=="open_project") {string f=Path.GetFullPath(S(a,"file"));Within(f);RequireNativeProjectDirectory(Path.GetDirectoryName(f));if(!File.Exists(f)||Path.GetExtension(f)!=".fsprj")throw new ArgumentException("Expected an existing fsprj");if(String.Equals(ProjectFile(),f,StringComparison.OrdinalIgnoreCase))return Obj("project",f,"already_open",true);ClearRefs();ProjectService("OpenProjectWithPath",f);if(!String.Equals(ProjectFile(),f,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("FStudio did not open the requested project; inspect native dialogs/output");return Obj("project",ProjectFile());}
@@ -107,17 +115,41 @@ namespace FStudioMcp {
   }
   static object Handle(Dictionary<string,object> a) {
    var op=S(a,"op");
-   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"execution_mode",ExecutionMode,"visible_log",false);
+   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.4.0","features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
    if(op=="job") {lock(gate){Dictionary<string,object> j;if(!jobs.TryGetValue(S(a,"job_id"),out j))throw new ArgumentException("Unknown job");return new Dictionary<string,object>(j);}}
+   var timer=Stopwatch.StartNew();
    var id=Guid.NewGuid().ToString("N");var job=Obj("job_id",id,"operation",op,"status","queued");lock(gate)jobs[id]=job;
    dispatcher.BeginInvoke(new Action(()=>{
-    lock(gate)job["status"]="running";
+    var queuedMs=timer.Elapsed.TotalMilliseconds;
+    lock(gate){job["status"]="running";job["queue_ms"]=queuedMs;}
     bool writeLog=!IsReadOnly(op);
-    if(writeLog)Log("开始 "+op+ (a.ContainsKey("command")?" · "+S(a,"command"):""));
-    try{var result=OnUi(a);lock(gate){job["result"]=result;job["status"]="completed";}if(writeLog)Log("返回 "+op);}
-    catch(Exception e){while(e is TargetInvocationException&&e.InnerException!=null)e=e.InnerException;lock(gate){job["status"]="failed";job["error"]=e.ToString();}Log("失败 "+op+" · "+e.Message);}
+    object result=null;string error=null;
+    try{
+     if(writeLog)Log("开始 "+op+ (a.ContainsKey("command")?" · "+S(a,"command"):""));
+     result=OnUi(a);
+    }catch(Exception e){
+     while(e is TargetInvocationException&&e.InnerException!=null)e=e.InnerException;
+     error=e.ToString();
+    }finally{
+     // 在同一锁下发布终态与计时，并唤醒管道线程。日志失败不能把已提交操作改报失败。
+     string status=error==null?"completed":"failed";
+     lock(gate){
+      double elapsed=timer.Elapsed.TotalMilliseconds;job["elapsed_ms"]=elapsed;job["execution_ms"]=elapsed-queuedMs;
+      if(error==null)job["result"]=result;else job["error"]=error;
+      job["status"]=status;Monitor.PulseAll(gate);
+     }
+     try{if(writeLog||status=="failed")Log(status+" "+op);}catch(Exception){/* 诊断日志不可使 UI 调度器崩溃或改变已经发布的终态。 */}
+    }
    }),op=="build_diagnostics"?DispatcherPriority.ContextIdle:DispatcherPriority.Normal);
-   return Obj("job_id",id,"status","queued");
+   // 只在独立管道线程短等 40 ms，不阻塞 UI，不改变任务身份，也不重试修改。
+   // 常见小操作可在首次应答携带结果；慢操作仍立即交还原 job_id 供后续查询。
+   lock(gate){
+    while(S(job,"status")=="queued"||S(job,"status")=="running"){
+     int remaining=40-(int)timer.ElapsedMilliseconds;if(remaining<=0)break;
+     Monitor.Wait(gate,remaining);
+    }
+    return new Dictionary<string,object>(job);
+   }
   }
   static void Listen() {
    while(true)try{
