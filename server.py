@@ -173,13 +173,13 @@ CANVAS_WIDGET = schema(dict(CANVAS_PRESET_FIELDS, name=KEY, preset=KEY, x=NUM, y
     width={'type': 'number', 'minimum': 1, 'maximum': 16384},
     height={'type': 'number', 'minimum': 1, 'maximum': 16384}), ['name', 'x', 'y', 'width', 'height'])
 TOOLS += [
-    tool('fstudio_model_get_many', '一次读取 1..100 个原生公开属性或集合页，支持 Position.Width 等点路径；复杂值返回本会话句柄，不缓存属性值。用于已知属性回读。',
+    tool('fstudio_model_get_many', '一次读取 1..100 个原生公开属性或显式集合页，支持 Position.Width 等点路径；复杂值和集合默认返回本会话句柄，指定index/offset才读取集合内容，不缓存属性值。用于已知属性回读。',
          schema({'reads': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': MODEL_READ}}, ['reads'])),
     tool('fstudio_model_apply_many', '将同一组点路径属性应用到同页或同草稿的多个句柄。展开后最多 100 项；先校验全部目标，使用一个原生撤销事务，失败回滚。保存工程后持久化。',
          schema({'refs': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': STR},
                  'properties': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': PROPERTY_VALUE}}, ['refs', 'properties']), False),
-    tool('fstudio_canvas_snapshot', '紧凑回读当前 Basic 业务页顶层控件的名称、UUID、句柄、类型和实际边界。可用 page_uuid 防止读错页，names 精确筛选并报告缺失/重名。按 next_offset 分页；不包含继承的公共页、不展开组，不等于截图或运行验收。',
-         schema({'page_uuid': PAGE_UUID, 'names': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': KEY},
+    tool('fstudio_canvas_snapshot', '紧凑回读当前页面顶层控件的名称、UUID、句柄、类型和实际边界，包括公共页自身内容。可用 page_uuid 防止读错页，names 精确筛选并报告缺失/重名。按 next_offset 分页；不合成继承的公共页、不展开组，不等于截图或运行验收。',
+         schema({'page_uuid': PAGE_UUID, 'names': {'type': 'array', 'minItems': 1, 'maxItems': 100, 'items': STR},
                  'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}})),
     tool('fstudio_canvas_create_many', '在当前 Basic 业务页一次创建 1..30 个原生控件；先配置完整草稿，再用一个原生撤销组批量插入。支持样式预设、点路径 properties、本地地址、StaticTextTool 的 text/text_style；StaticTextTool必须提供非空白text，properties和tool_properties值仅支持标量。名称和边界须逐项填写。拒绝重名；只创建不是 upsert，超时查询同一 job_id，不能重复提交。检查实际边界与 bounds_adjusted，保存后再验证重开/编译。',
          schema({'page_uuid': PAGE_UUID, 'widgets': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': CANVAS_WIDGET},
@@ -513,6 +513,9 @@ class FStudio:
         """提前限制展开量，宿主再检查实际对象归属、别名重复及属性转换。"""
         if len(set(refs)) != len(refs):
             raise ValueError('Duplicate model reference')
+        members = [entry['member'] for entry in properties]
+        if len(set(members)) != len(members):
+            raise ValueError('Duplicate property path')
         if len(refs) * len(properties) > 100:
             raise ValueError('Expanded batch exceeds 100 properties')
         return self.visible.request('apply_members', refs=refs, properties=properties)

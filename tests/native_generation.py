@@ -255,6 +255,15 @@ def quality(host, report, directory):
     snapshot = host.complete('drawing_snapshot')
     (directory / 'quality.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf8')
     assert len(snapshot['items']) == 4
+    # 已发布批量接口会给项目中所有初始化语言赋值；不能只填当前语言而让其他语言静默空白。
+    title_ref = snapshot['items'][0]['model']['$ref']
+    labels = host.complete('read_member',ref=title_ref,member='NormalInfo.StaticTextContentInfos')['items']
+    label_values = host.complete('read_members',reads=[
+        {'ref':label['$ref'],'member':member}
+        for label in labels for member in ('LabelContent','FontStyleInfo.Font.FontType')])['results']
+    assert len(labels) >= 2
+    assert [item['value'] for item in label_values] == [value for _ in labels for value in (widgets[0]['text'],'Graphic')]
+    report['language_label_count'] = len(labels)
     # 后项无效属性必须整批拒绝，前项草稿不能留在画布或草稿列表里。
     invalid = [dict(widgets[1],name='rollback.good'), dict(widgets[1],name='rollback.bad',properties=[{'member':'MissingProperty','value':1}])]
     try:

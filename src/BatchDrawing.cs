@@ -20,9 +20,8 @@ namespace FStudioMcp {
    internal bool ToolSettingsOpen,SettingsOpen;
   }
 
-  /// <summary>两个批量接口只操作当前业务页；UUID 是并发切页时的前置条件，不会自动切页。</summary>
+  /// <summary>UUID 是并发切页时的前置条件，不会自动切页；写入接口另行限制业务页。</summary>
   static void RequireBatchPage(Dictionary<string,object>a,object page){
-   RequireBasicPage(page);
    if(a.ContainsKey("page_uuid")){
     Guid expected;
     if(!(a["page_uuid"] is string)||!Guid.TryParse((string)a["page_uuid"],out expected))throw new ArgumentException("page_uuid must be a UUID string");
@@ -79,18 +78,22 @@ namespace FStudioMcp {
    int limit=a.ContainsKey("limit")?(int)BatchNumber(a["limit"],"limit",1,100,true):100;
    string[] names=null;
    if(a.ContainsKey("names")){
-    names=BatchArray(a,"names",100,true).Select(x=>BatchString(Obj("name",x),"name",200)).ToArray();
+    // 快照只读匹配已有 Comment；旧工程的空白、换行名称也应可定位，不套用新建控件命名限制。
+    names=BatchArray(a,"names",100,true).Select(x=>{var name=x as string;if(String.IsNullOrEmpty(name)||name.Length>512)throw new ArgumentException("names entries must be nonempty strings of at most 512 characters");return name;}).ToArray();
     if(names.Length==0||names.Distinct(StringComparer.Ordinal).Count()!=names.Length)throw new ArgumentException("names must contain 1..100 distinct names");
    }
    var all=((IEnumerable)Member(page,"Graphicses")).Cast<object>().Select((m,i)=>new {Model=m,Index=i,Name=Convert.ToString(Member(m,"Comment"))}).ToArray();
    var wanted=names==null?null:new HashSet<string>(names,StringComparer.Ordinal);
    var matched=all.Where(x=>wanted==null||wanted.Contains(x.Name)).ToArray();
    var counts=matched.GroupBy(x=>x.Name,StringComparer.Ordinal).ToDictionary(g=>g.Key,g=>g.Count(),StringComparer.Ordinal);
+   // 保持已发布接口的 {name,count} 结构；重复总数按全集合计算，列表最多返回 100 项。
+   var duplicates=counts.Where(x=>x.Value>1).ToArray();
    var objects=matched.Skip(offset).Take(limit).Select(x=>Obj("model",DescribeOwned(x.Model,view),"name",x.Name,"uuid",Convert.ToString(Member(x.Model,"UniqueId")),"type",x.Model.GetType().FullName,"bounds",BoundsResult(DrawingBounds(x.Model)),"index",x.Index)).ToArray();
    int consumed=offset+objects.Length;
    return Obj("page_uuid",PageUuid(page).ToString(),"page",Obj("uuid",PageUuid(page).ToString(),"id",Member(page,"Id"),"name",Member(page,"Name"),"type",Convert.ToString(Member(page,"Type")),"width",Member(page,"Width"),"height",Member(page,"Height")),
     "items",objects,"total_count",all.Length,"scope","active_page_top_level_only","matched_count",matched.Length,"offset",offset,"limit",limit,"next_offset",consumed<matched.Length?(object)consumed:null,"complete",consumed>=matched.Length,
-    "missing_names",names==null?new string[0]:names.Where(n=>!counts.ContainsKey(n)).ToArray(),"duplicate_names",counts.Where(x=>x.Value>1).Select(x=>x.Key).ToArray(),"filtered",names!=null,"includes_inherited",false,"expands_groups",false,"dirty",Member(view,"IsDirty"),"elapsed_ms",watch.Elapsed.TotalMilliseconds);
+    "missing_names",names==null?new string[0]:names.Where(n=>!counts.ContainsKey(n)).ToArray(),"duplicate_names",duplicates.Take(100).Select(x=>Obj("name",x.Key,"count",x.Value)).ToArray(),"duplicate_name_count",duplicates.Length,
+    "filtered",names!=null,"includes_inherited",false,"expands_groups",false,"common_composition_included",false,"nested_children_included",false,"dirty",Member(view,"IsDirty"),"elapsed_ms",watch.Elapsed.TotalMilliseconds);
   }
 
   /// <summary>整批先检查输入结构、工具类型、名称、数量和标量值；此阶段不创建模型、不登记组件。</summary>
@@ -155,7 +158,7 @@ namespace FStudioMcp {
   static void RequireBatchPath(string path){
    var segments=path.Split('.');
    if(segments.Length>16||segments.Any(s=>!Regex.IsMatch(s,"^[A-Za-z_][A-Za-z0-9_]*$")))throw new ArgumentException("Expected a plain property path: "+path);
-   var forbidden=new[]{"Position","Comment","Name","DisplayName","ComponentId","UniqueId","Id","Parent","Project","ProjectContext","Services","View","ViewModel"};
+   var forbidden=new[]{"Position","Comment","Name","DisplayName","ComponentId","UniqueId","Id","IsReferenced","Parent","Project","ProjectContext","Services","View","ViewModel"};
    if(segments.Any(s=>forbidden.Contains(s)))throw new ArgumentException("Identity, geometry and ownership paths cannot be set in batch properties: "+path);
   }
   static void ValidateBatchTextStyle(Dictionary<string,object>style){
@@ -168,36 +171,43 @@ namespace FStudioMcp {
    }
   }
 
-  /// <summary>以原生当前语言建立可编辑文字项；复用原生字体数据，其他语言内容不被覆盖。</summary>
+  /// <summary>为新控件补齐全部项目语言，并保持已发布批量接口对所有初始化语言应用文字和样式的行为。</summary>
   static void ConfigureBatchText(BatchWidget widget){
-   // 批量文字省去了属性面板，仍需显式补全当前语言条目，再写入已校验的非空文字。
    if(widget.Draft.Tool.GetType().Name!="StaticTextTool")return;
    var normal=Member(widget.Draft.Model,"NormalInfo");var services=PageServices();
    int languageId=Convert.ToInt32(Member(Member(services,"LanguageService"),"CurrentLanguageId"));
    var languages=Member(Member(CurrentProject(),"HMIConfigInfo"),"LanguageConfigInfo");
-   var language=((IEnumerable)Member(languages,"LanguageInfos")).Cast<object>().SingleOrDefault(x=>Convert.ToInt32(Member(x,"SN"))==languageId);
-   if(language==null)throw new InvalidOperationException("Current native language is not configured");
+   ConfigureBatchTextLanguages(normal,((IEnumerable)Member(languages,"LanguageInfos")).Cast<object>().ToArray(),languageId,widget.Input);
+  }
+  /// <summary>只配置本批新草稿；原生工厂复制各语言字体，不能复用项目字体对象或仅初始化当前语言。</summary>
+  /// <remarks>保留原生已有条目并统一应用本次声明；当前语言仍决定画布预览，其他语言在切换时已有可编辑内容。</remarks>
+  static void ConfigureBatchTextLanguages(object normal,object[] languages,int languageId,Dictionary<string,object> input){
+   if(!languages.Any(x=>Convert.ToInt32(Member(x,"SN"))==languageId))throw new InvalidOperationException("Current native language is not configured");
+   if((input.ContainsKey("text")||input.ContainsKey("text_style"))&&Convert.ToString(Member(normal,"UsingType"))!="Label")throw new ArgumentException("text and text_style cannot be combined with a non-Label static text mode");
    var contents=Member(normal,"StaticTextContentInfos");
-   var content=((IEnumerable)contents).Cast<object>().SingleOrDefault(x=>Convert.ToInt32(Member(x,"LanguageSN"))==languageId);
-   if(content==null){
-    // CreateAsChild 还重载了 IReadonlyFont 参数；精确使用本语言 FontInfo 类型，避免两个兼容重载产生歧义。
+   foreach(var language in languages){
+    int configuredId=Convert.ToInt32(Member(language,"SN"));
+    var content=((IEnumerable)contents).Cast<object>().SingleOrDefault(x=>Convert.ToInt32(Member(x,"LanguageSN"))==configuredId);
+    if(content!=null)continue;
+    // CreateAsChild 还有 IReadonlyFont 重载；精确匹配 FontInfo，原生实现经 DTO 创建独立字体数据。
     var nativeFont=Member(language,"FontInfo");
+    if(nativeFont==null)throw new InvalidOperationException("Native language font is not initialized");
     var factory=Native("Flexem.Studio.Components.Graphicses.StaticTextContentInfo").GetMethod("CreateAsChild",new[]{typeof(int),nativeFont.GetType()});
     if(factory==null)throw new InvalidOperationException("Native language-font factory is unavailable");
-    content=factory.Invoke(null,new[]{(object)languageId,nativeFont});CallNative(contents,"Add",content);
+    content=factory.Invoke(null,new[]{(object)configuredId,nativeFont});CallNative(contents,"Add",content);
    }
-   if(widget.Input.ContainsKey("text")||widget.Input.ContainsKey("text_style")){
-    if(Convert.ToString(Member(normal,"UsingType"))!="Label")throw new ArgumentException("text and text_style cannot be combined with a non-Label static text mode");
-   }
-   NativeSet(normal,"LanguageSN",languageId);NativeSet(content,"UsingType",Member(normal,"UsingType"));
-   if(widget.Input.ContainsKey("text"))NativeSet(content,"LabelContent",widget.Input["text"]);
-   if(widget.Input.ContainsKey("text_style")){
-    var fontStyle=Member(content,"FontStyleInfo");var font=Member(fontStyle,"Font");
-    if(font==null)throw new InvalidOperationException("Native text font is not initialized");
-    // 直接样式应使用本条目的字体；否则已选字体样式会优先覆盖用户声明。
-    NativeSet(fontStyle,"UseFontStyle",false);
-    var mapping=new Dictionary<string,string>{{"font_size","FontSize"},{"color","FontColor"},{"bold","IsBold"},{"font_name","FontName"}};
-    foreach(var pair in (Dictionary<string,object>)widget.Input["text_style"])NativeSet(font,mapping[pair.Key],pair.Value);
+   NativeSet(normal,"LanguageSN",languageId);
+   foreach(var content in ((IEnumerable)contents).Cast<object>()){
+    NativeSet(content,"UsingType",Member(normal,"UsingType"));
+    if(input.ContainsKey("text"))NativeSet(content,"LabelContent",input["text"]);
+    if(input.ContainsKey("text_style")){
+     var fontStyle=Member(content,"FontStyleInfo");var font=Member(fontStyle,"Font");
+     if(font==null)throw new InvalidOperationException("Native text font is not initialized");
+     // 与原批量接口一致：显式样式使用本条目的图形字体，防止已选样式或矢量字体覆盖声明。
+     NativeSet(fontStyle,"UseFontStyle",false);NativeSet(font,"FontType","Graphic");
+     var mapping=new Dictionary<string,string>{{"font_size","FontSize"},{"color","FontColor"},{"bold","IsBold"},{"font_name","FontName"}};
+     foreach(var pair in (Dictionary<string,object>)input["text_style"])NativeSet(font,mapping[pair.Key],pair.Value);
+    }
    }
   }
 
@@ -261,7 +271,7 @@ namespace FStudioMcp {
 
   /// <summary>整批草稿准备成功后以一次原生插入、一个撤销组提交；异常时逐项收集回滚失败，保留首错。</summary>
   static object DrawingCreateMany(Dictionary<string,object>a,object view,object page,object context){
-   var watch=Stopwatch.StartNew();RequireBatchPage(a,page);
+   var watch=Stopwatch.StartNew();RequireBasicPage(page);RequireBatchPage(a,page);
    var widgets=ValidateBatchSpecifications(a,page);double validated=watch.Elapsed.TotalMilliseconds;
    var original=((IEnumerable)Member(page,"Graphicses")).Cast<object>().ToArray();
    object group=null,placement=null;bool placementCommitted=false,groupCommitted=false;
@@ -312,7 +322,7 @@ namespace FStudioMcp {
      results.Add(Obj("model",DescribeOwned(model,widget.Draft),"name",widget.Name,"uuid",Convert.ToString(Member(model,"UniqueId")),"type",model.GetType().FullName,"requested_bounds",BoundsResult(widget.Requested),"actual_bounds",BoundsResult(actualBounds),"bounds_adjusted",adjusted,"index",Array.FindIndex(actual,x=>Object.ReferenceEquals(x,model))));
     }
     inserted=watch.Elapsed.TotalMilliseconds;
-    response=Obj("page_uuid",PageUuid(page).ToString(),"created",results.ToArray(),"count",results.Count,"warnings",warnings.ToArray(),"native_undo_transaction",true,"placement_operations",1,"canvas_changed",true,"dirty",Member(view,"IsDirty"),"persistence","save_project_to_persist","text_scope","current_native_language");
+    response=Obj("page_uuid",PageUuid(page).ToString(),"created",results.ToArray(),"count",results.Count,"warnings",warnings.ToArray(),"native_undo_transaction",true,"placement_operations",1,"canvas_changed",true,"dirty",Member(view,"IsDirty"),"persistence","save_project_to_persist","hardware_io",false,"text_scope","all_initialized_languages");
     CallNative(group,"Commit");groupCommitted=true;
     // 只转移已经存在的模型句柄；finally 会释放仍属草稿的临时地址句柄，不会误删结果。
     for(int i=0;i<widgets.Count;i++){

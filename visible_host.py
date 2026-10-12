@@ -67,9 +67,10 @@ class VisibleHost:
         return result['data']
 
     def read(self, op, **args):
-        """优先消费首次应答中的终态；未完成时只查询原任务，绝不重发操作。"""
+        """优先消费首次终态；原任务轮询以 5～50 ms 退避，观察期限不丢弃刚收到的结果。"""
         job = self.request(op,**args)
         deadline = time.monotonic()+5
+        delay = .005
         while True:
             if job['status']=='completed': return job['result']
             if job['status']=='failed': raise RuntimeError(job['error'])
@@ -78,4 +79,8 @@ class VisibleHost:
                 return job
             job = self.request('job',job_id=job['job_id'])
             if job['status'] not in ('completed','failed'):
-                time.sleep(.1)
+                # 长任务逐步降低查询频率，且不让等待越过五秒观察预算；超时仍保留原任务身份。
+                remaining = deadline-time.monotonic()
+                if remaining>0:
+                    time.sleep(min(delay,remaining))
+                    delay = min(delay*2,.05)

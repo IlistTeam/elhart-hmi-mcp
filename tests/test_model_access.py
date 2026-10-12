@@ -8,7 +8,7 @@ import unittest
 
 class ModelAccessRegressionTests(unittest.TestCase):
     def test_model_access_harness(self):
-        """覆盖点路径、批量限制、句柄身份、后台保护和异常回滚。"""
+        """覆盖点路径边界、惰性集合读取、父子句柄冲突、批量限制、后台保护和异常回滚。"""
         repository = Path(__file__).resolve().parents[1]
         compiler = Path(r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe")
         if not compiler.is_file():
@@ -27,7 +27,7 @@ class ModelAccessRegressionTests(unittest.TestCase):
                 errors="replace", timeout=60,
             )
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn("PASS 23 model access scenarios", run.stdout)
+            self.assertIn("PASS 26 model access scenarios", run.stdout)
             print(run.stdout.strip())
 
 

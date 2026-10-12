@@ -96,6 +96,21 @@ namespace FStudioMcp {
      var items=(object[])((Dictionary<string,object>)results[1])["items"];Check(items.Length==2,"offset count");
      Check(Object.ReferenceEquals(OwningScope(S((Dictionary<string,object>)items[0],"$ref")),scope),"item scope");
     });
+    Run("known collection reads stay lazy unless traversal is explicit",delegate{
+     // 迭代器会抛错，因此此处能成功返回句柄便证明默认批量属性读取没有枚举集合。
+     var scope=new DrawingDraft();var graphic=NewGraphic(8);graphic.Items=new IndexOnlyList{4,5,6};var id=Handle(graphic,scope);
+     var result=(Dictionary<string,object>)ReadModelMembers(Obj("reads",new object[]{Obj("ref",id,"member","Items"),Obj("ref",id,"member","Items","index",1)}));
+     var rows=((object[])result["results"]).Cast<Dictionary<string,object>>().ToArray();
+     Check(!rows[0].ContainsKey("items")&&!rows[0].ContainsKey("offset"),"known collection was expanded implicitly");
+     var collection=(Dictionary<string,object>)rows[0]["value"];
+     Check((bool)collection["enumerable"]&&Object.ReferenceEquals(Ref(Obj("ref",collection["$ref"])),graphic.Items),"collection handle changed identity");
+     Check((int)rows[1]["value"]==5,"explicit batch indexing lost direct list access");
+     graphic.Items=new ArrayList{4,5,6};var listId=Handle(graphic.Items,scope);
+     result=(Dictionary<string,object>)ReadModelMembers(Obj("reads",new object[]{Obj("ref",id,"member","Items","offset",1),Obj("ref",listId)}));
+     rows=((object[])result["results"]).Cast<Dictionary<string,object>>().ToArray();
+     Check(((object[])rows[0]["items"]).Length==2&&((object[])rows[1]["items"]).Length==3,"explicit paging or collection handle did not expand");
+     Check(((object[])ReadModelMember(Obj("ref",id,"member","Items"))["items"]).Length==3,"single-property collection behavior changed");
+    });
     Run("handles use reference identity",delegate{
      var a=NewGraphic(1);var b=NewGraphic(1);Check(a.Equals(b),"test equality assumption");
      string aid=Handle(a,null),bid=Handle(b,null);Check(aid!=bid,"equal objects must have different handles");
@@ -164,6 +179,16 @@ namespace FStudioMcp {
      Fails(delegate{Read(id,"Position..Width");},"empty property");Fails(delegate{Read(id,"Nested.Width");},"reaches null");Fails(delegate{Read(id,"Position.Missing");},"Unknown");Fails(delegate{Read(id,"");},"empty");
      Fails(delegate{Read(id,"WriteOnly");},"not publicly readable");Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,"ReadOnly",8)}));},"not publicly writable");
     });
+    Run("property paths enforce published length depth and identifier rules",delegate{
+     Check(ModelMemberSegments(new string('A',512)).Length==1,"512-character path boundary rejected");
+     Check(ModelMemberSegments(String.Join(".",Enumerable.Repeat("_A0",16).ToArray())).Length==16,"16-segment path boundary rejected");
+     var graphic=NewGraphic(3);graphic.Nested=graphic;var id=Handle(graphic,new DrawingDraft());
+     foreach(var path in new[]{new string('A',513),String.Join(".",Enumerable.Repeat("Nested",17).ToArray()),"Position[0]","Position.宽度","Position.0Width","Position.Width()"}){
+      Fails(delegate{Read(id,path);},"Expected a property path");
+      Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,path,9)}));},"Expected a property path");
+     }
+     Check(graphic.Position.Width==3,"invalid path validation changed the model");
+    });
     Run("value type path writes refused",delegate{
      var graphic=NewGraphic(2);var id=Handle(graphic,new DrawingDraft());
      Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,"ValuePosition.Width",9)}));},"value-type copy");Check(graphic.ValuePosition.Width==0,"value path mutated");
@@ -183,11 +208,22 @@ namespace FStudioMcp {
     Run("batch writes require an owned page or draft",delegate{
      var graphic=NewGraphic(3);var id=Handle(graphic,null);Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,"Position.Width",8)}));},"page or draft scope");Check(graphic.Position.Width==3,"unowned batch mutated");
     });
-    Run("parent replacement invalidates later path and restores relation",delegate{
+    Run("parent replacement rejects dependent paths before writing",delegate{
      var scope=new DrawingDraft();var graphic=NewGraphic(3);var original=graphic.Position;var replacement=new Position{Width=7};var id=Handle(graphic,scope);var replacementId=Handle(replacement,scope);
-     Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,"Position",Obj("$ref",replacementId)),Edit(id,"Position.Width",99)}));},"target changed during batch");
-     Check(Object.ReferenceEquals(graphic.Position,original),"parent replacement rollback lost original relation");
+     Fails(delegate{SetModelProperties(Obj("changes",new object[]{Edit(id,"Position",Obj("$ref",replacementId)),Edit(id,"Position.Width",99)}));},"Parent/child replacement conflict");
+     Check(Object.ReferenceEquals(graphic.Position,original),"parent replacement preflight changed original relation");
      Check(original.Width==3&&replacement.Width==7,"detached or replacement child mutated");
+    });
+    Run("parent replacement rejects independent old child handles in either order",delegate{
+     // 旧子句柄不会随父属性替换而失效；必须在事务开始前通过对象链关系拒绝，而不是等重解析路径发现变化。
+     var transactionRoot=new RootItem();var scope=new PageView{DesignContext=new DesignContext{RootItem=transactionRoot}};
+     var graphic=NewGraphic(3);var original=graphic.Position;var replacement=new Position{Width=7};var id=Handle(graphic,scope);
+     var childId=Handle(original,scope);var replacementId=Handle(replacement,scope);
+     var parentWrite=Edit(id,"Position",Obj("$ref",replacementId));var childWrite=Edit(childId,"Width",99);
+     foreach(var changes in new[]{new object[]{parentWrite,childWrite},new object[]{childWrite,parentWrite}})
+      Fails(delegate{SetModelProperties(Obj("changes",changes));},"Parent/child replacement conflict");
+     Check(transactionRoot.Groups==0,"parent/child conflict started a transaction");
+     Check(Object.ReferenceEquals(graphic.Position,original)&&original.Width==3&&replacement.Width==7,"parent/child conflict mutated a model");
     });
     Run("mode rebuild invalidates later path and restores model state",delegate{
      var scope=new DrawingDraft();var graphic=new ModeGraphic();var original=graphic.Position;var id=Handle(graphic,scope);
@@ -202,7 +238,7 @@ namespace FStudioMcp {
      timer.Restart();for(int i=0;i<2000;i++)Check(Handle(last,null)==expected,"cached lookup");timer.Stop();
      Console.WriteLine("BENCH 5000 handles / 2000 last-object lookups: linear="+baseline.ToString("F2")+"ms reverse="+timer.Elapsed.TotalMilliseconds.ToString("F2")+"ms");
     });
-    Console.WriteLine("PASS 23 model access scenarios");return 0;
+    Console.WriteLine("PASS 26 model access scenarios");return 0;
    }catch(Exception error){Console.Error.WriteLine(error);return 1;}
   }
  }

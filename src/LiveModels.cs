@@ -59,11 +59,13 @@ namespace FStudioMcp {
    var p=ModelProperty(o.GetType(),n);RequireReadableModelProperty(o.GetType(),p);
    return p.GetValue(o,null);
   }
-  /// <summary>点路径仅表示属性导航，不接受索引、空段或表达式；集合索引仍由 read_member 的 index 参数指定。</summary>
+  /// <summary>点路径最多 512 字符、16 段 ASCII 属性名；不接受索引或表达式，集合索引仍通过独立参数指定。</summary>
   static string[] ModelMemberSegments(string path){
    if(String.IsNullOrWhiteSpace(path))throw new ArgumentException("Member path must not be empty");
    var segments=path.Split('.');
    if(segments.Any(s=>String.IsNullOrWhiteSpace(s)))throw new ArgumentException("Member path contains an empty property: "+path);
+   if(path.Length>512||!System.Text.RegularExpressions.Regex.IsMatch(path,@"\A[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,15}\z"))
+    throw new ArgumentException("Expected a property path with 1..16 ASCII identifier segments and at most 512 characters");
    return segments;
   }
   /// <summary>安全读取点路径；每一级都重新取值，并在空中间节点处报告完整路径及失败段。</summary>
@@ -87,12 +89,17 @@ namespace FStudioMcp {
   /// 防止经由普通模型关联属性修改 UI。值类型节点会被装箱复制，故拒绝这类无法可靠回写的路径。
   /// </summary>
   internal static PropertyInfo ResolvePropertyTarget(object root,string path,out object target){
+   return ResolvePropertyTarget(root,path,out target,null);
+  }
+  /// <summary>需要批量预检时记录完整父对象链，包括独立子句柄的根，以识别跨句柄的父子替换冲突。</summary>
+  static PropertyInfo ResolvePropertyTarget(object root,string path,out object target,List<object> owners){
    var segments=ModelMemberSegments(path);target=root;string rootId;
    var scope=root!=null&&reverseRefs.TryGetValue(root,out rootId)?OwningScope(rootId):null;
    for(int i=0;i<segments.Length;i++){
     if(target==null)throw new ArgumentException("Member path '"+path+"' reaches null before '"+segments[i]+"'");
     RequireBackgroundModelTarget(target);RequireModelPathScope(target,scope,path);
     if(target.GetType().IsValueType)throw new ArgumentException("Member path cannot write through a value-type copy: "+path);
+    if(owners!=null)owners.Add(target);
     var property=ModelProperty(target.GetType(),segments[i]);RequireReadableModelProperty(target.GetType(),property);
     if(i==segments.Length-1){
      if(property.GetSetMethod()==null)throw new ArgumentException("Property is not publicly writable: "+path);
@@ -185,7 +192,7 @@ namespace FStudioMcp {
    RequireBackgroundGraphImport(target,name,converted);
    return DescribeOwned(method.Invoke(target,converted),a.ContainsKey("ref")?OwningScope(S(a,"ref")):null);
   }
-  sealed class ModelPropertyChange {internal string Ref,Member;internal object Target,Scope,Before,After;internal PropertyInfo Property;}
+  sealed class ModelPropertyChange {internal string Ref,Member;internal object Target,Scope,Before,After;internal PropertyInfo Property;internal object[] PathOwners;}
   // The designer owns the paired WPF/CSLA transaction. Beginning the CSLA
   // session directly would nest another transaction when geometry updates the view.
   static object BeginModelChange(object view,string name){return CallNative(Member(Member(view,"DesignContext"),"RootItem"),"OpenGroup",name);}
@@ -202,14 +209,19 @@ namespace FStudioMcp {
    var input=ModelBatchEntries(a,"changes");var changes=new List<ModelPropertyChange>();
    foreach(var entry in input){
     var change=entry as Dictionary<string,object>;if(change==null||!change.ContainsKey("ref")||!change.ContainsKey("member")||!change.ContainsKey("value"))throw new ArgumentException("Each change must contain ref, member and value");
-    var root=Ref(change);object target;var name=S(change,"member");
-    var property=ResolvePropertyTarget(root,name,out target);
+    var root=Ref(change);object target;var name=S(change,"member");var owners=new List<object>();
+    var property=ResolvePropertyTarget(root,name,out target,owners);
     var id=S(change,"ref");var scope=OwningScope(id);
     if(scope==null)throw new ArgumentException("Batch properties require a page or draft scope; obtain handles from drawing_state or drawing_prepare");
     // 不按请求字符串判重：Position.Width 与单独 Position 句柄的 Width 可能指向同一属性。
     if(changes.Any(c=>Object.ReferenceEquals(c.Target,target)&&c.Property.Equals(property)))throw new ArgumentException("Duplicate resolved property in batch: "+name);
     if(changes.Count>0&&!Object.ReferenceEquals(changes[0].Scope,scope))throw new ArgumentException("All batch properties must belong to the same page or draft");
-    changes.Add(new ModelPropertyChange{Ref=id,Member=name,Target=target,Scope=scope,Property=property,Before=Member(target,property.Name),After=ConvertArg(change["value"],property.PropertyType)});
+    var before=Member(target,property.Name);
+    // 两个方向都在写入前拒绝：替换父属性后，独立旧子句柄仍能解析，单靠执行前重读不足以识别脱离模型的写入。
+    // 执行阶段仍保留重新解析，用于发现模式 setter 等无法从属性关系预知的子对象重建。
+    if(changes.Any(c=>(c.Before!=null&&owners.Any(o=>Object.ReferenceEquals(o,c.Before)))||(before!=null&&c.PathOwners.Any(o=>Object.ReferenceEquals(o,before)))))
+     throw new ArgumentException("Parent/child replacement conflict in batch: "+name);
+    changes.Add(new ModelPropertyChange{Ref=id,Member=name,Target=target,Scope=scope,Property=property,Before=before,After=ConvertArg(change["value"],property.PropertyType),PathOwners=owners.ToArray()});
    }
    var owner=OwningView(changes[0].Ref);object transaction=null;int applied=0;
    try{
@@ -248,7 +260,7 @@ namespace FStudioMcp {
    return SetModelProperties(Obj("changes",changes.ToArray()));
   }
   /// <summary>单次读取沿用原返回结构；点路径不创建无用中间句柄，列表读取优先用 IList 的直接索引。</summary>
-  static Dictionary<string,object> ReadModelMember(Dictionary<string,object> a){
+  static Dictionary<string,object> ReadModelMember(Dictionary<string,object> a,bool expandCollections=true){
    var root=Ref(a);object value=a.ContainsKey("member")?ResolveMemberPath(root,S(a,"member")):root;
    if(a.ContainsKey("index")){
     int index=Convert.ToInt32(a["index"]);if(index<0)throw new ArgumentException("index must not be negative");
@@ -260,16 +272,17 @@ namespace FStudioMcp {
    int offset=a.ContainsKey("offset")?Convert.ToInt32(a["offset"]):0;
    if(offset<0)throw new ArgumentException("offset must not be negative");
    var owner=OwningScope(S(a,"ref"));
-   if(value is IEnumerable&&!(value is string))return Obj("value",DescribeOwned(value,owner),"items",((IEnumerable)value).Cast<object>().Skip(offset).Take(100).Select(x=>DescribeOwned(x,owner)).ToArray(),"offset",offset);
+   if(expandCollections&&value is IEnumerable&&!(value is string))return Obj("value",DescribeOwned(value,owner),"items",((IEnumerable)value).Cast<object>().Skip(offset).Take(100).Select(x=>DescribeOwned(x,owner)).ToArray(),"offset",offset);
    return Obj("value",DescribeOwned(value,owner));
   }
-  /// <summary>在一个宿主调用内完成至多 100 次模型读取，顺序对应输入，保留集合分页和条目句柄的归属。</summary>
+  /// <summary>批量读取已知属性默认只描述集合句柄；显式 index/offset 或直接读取集合句柄时才枚举，并保留条目归属。</summary>
   static object ReadModelMembers(Dictionary<string,object> a){
    var reads=ModelBatchEntries(a,"reads");var results=new List<object>();
    foreach(var entry in reads){
     var read=entry as Dictionary<string,object>;
     if(read==null||!read.ContainsKey("ref"))throw new ArgumentException("Each read must contain ref");
-    var result=ReadModelMember(read);result["ref"]=S(read,"ref");
+    bool expand=read.ContainsKey("index")||read.ContainsKey("offset")||!read.ContainsKey("member");
+    var result=ReadModelMember(read,expand);result["ref"]=S(read,"ref");
     if(read.ContainsKey("member"))result["member"]=S(read,"member");
     if(read.ContainsKey("index"))result["index"]=read["index"];
     results.Add(result);

@@ -47,6 +47,28 @@ public sealed class ContractPage {
 }
 public sealed class ContractView {public bool IsDirty {get;set;}}
 
+// 模拟两种原生工厂重载；接口重载故意拒绝，以验证宿主精确选择 FontInfo 类型。
+public interface IContractFont {}
+public sealed class ContractFont:IContractFont {
+ public string FontType {get;set;} public double FontSize {get;set;} public string FontColor {get;set;}
+ public string FontName {get;set;} public bool IsBold {get;set;}
+ public ContractFont Clone(){return (ContractFont)MemberwiseClone();}
+}
+public sealed class ContractLanguage {public int SN {get;set;} public ContractFont FontInfo {get;set;}}
+public sealed class ContractFontStyle {public bool UseFontStyle {get;set;} public ContractFont Font {get;set;}}
+namespace Flexem.Studio.Components.Graphicses {
+ public sealed class StaticTextContentInfo {
+  public int LanguageSN {get;set;} public string LabelContent {get;set;} public string UsingType {get;set;}
+  public ContractFontStyle FontStyleInfo {get;set;}
+  public static StaticTextContentInfo CreateAsChild(int languageId,IContractFont font){throw new Exception("An exact native font overload is required");}
+  public static StaticTextContentInfo CreateAsChild(int languageId,ContractFont font){return new StaticTextContentInfo{LanguageSN=languageId,FontStyleInfo=new ContractFontStyle{UseFontStyle=true,Font=font.Clone()}};}
+ }
+}
+public sealed class ContractTextNormal {
+ public string UsingType {get;set;} public int LanguageSN {get;set;}
+ public List<Flexem.Studio.Components.Graphicses.StaticTextContentInfo> StaticTextContentInfos {get;set;}
+}
+
 /// <summary>直接调用已编译宿主的真实验证和快照函数；使用内存页，不启动 FStudio、不读写工程。</summary>
 public static class DrawingContractsHarness {
  static Type Host;
@@ -76,6 +98,22 @@ public static class DrawingContractsHarness {
   Check(other.ComponentId==2,"Native id allocation groups by exact model type");
   Check(first.Updates==0&&second.Updates==1&&other.Updates==0,"Only collisions should call the explicit native update interface");
  }
+ static void TestTextLanguages(){
+  var languages=new[]{new ContractLanguage{SN=1,FontInfo=new ContractFont{FontType="Vector",FontName="语言一"}},new ContractLanguage{SN=2,FontInfo=new ContractFont{FontType="Vector",FontName="语言二"}}};
+  var existing=Flexem.Studio.Components.Graphicses.StaticTextContentInfo.CreateAsChild(1,languages[0].FontInfo);
+  var retained=Flexem.Studio.Components.Graphicses.StaticTextContentInfo.CreateAsChild(3,languages[0].FontInfo);
+  var normal=new ContractTextNormal{UsingType="Label",StaticTextContentInfos=new List<Flexem.Studio.Components.Graphicses.StaticTextContentInfo>{existing,retained}};
+  var request=D("text","目标值","text_style",D("font_size",18,"color","#FFE0EDF8","bold",true,"font_name","Microsoft YaHei"));
+  Invoke("ConfigureBatchTextLanguages",normal,languages.Cast<object>().ToArray(),2,request);
+  Check(normal.StaticTextContentInfos.Count==3&&normal.StaticTextContentInfos.Any(x=>x.LanguageSN==2),"Every configured project language must receive a native text item");
+  Check(Object.ReferenceEquals(normal.StaticTextContentInfos[0],existing)&&Object.ReferenceEquals(normal.StaticTextContentInfos[1],retained),"Previously initialized native language items must be retained");
+  Check(normal.LanguageSN==2&&normal.StaticTextContentInfos.All(x=>x.LabelContent=="目标值"&&x.UsingType=="Label"),"Text must apply to every initialized language while preview follows the active language");
+  Check(normal.StaticTextContentInfos.All(x=>!x.FontStyleInfo.UseFontStyle&&x.FontStyleInfo.Font.FontType=="Graphic"),"Explicit text styles must retain the published Graphic font behavior for every language");
+  Check(normal.StaticTextContentInfos.All(x=>x.FontStyleInfo.Font.FontSize==18&&x.FontStyleInfo.Font.FontColor=="#FFE0EDF8"&&x.FontStyleInfo.Font.IsBold&&x.FontStyleInfo.Font.FontName=="Microsoft YaHei"),"Every initialized language must receive the requested native font style");
+  Check(languages.All(x=>x.FontInfo.FontType=="Vector")&&!Object.ReferenceEquals(normal.StaticTextContentInfos.Last().FontStyleInfo.Font,languages[1].FontInfo),"Text configuration must not mutate or share project language fonts");
+  Reject(()=>Invoke("ConfigureBatchTextLanguages",normal,languages.Cast<object>().ToArray(),4,request),"Unconfigured active language");
+  normal.UsingType="TextLib";Reject(()=>Invoke("ConfigureBatchTextLanguages",normal,languages.Cast<object>().ToArray(),2,request),"Text properties cannot configure a text-library mode");
+ }
 
  public static int Main(string[] args){
   try{
@@ -84,6 +122,7 @@ public static class DrawingContractsHarness {
    string root=Path.GetFullPath(args[1]).TrimEnd('\\')+"\\";
    Host.GetField("workspace",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,root);
    TestComponentIds();
+   TestTextLanguages();
    var page=new ContractPage{UniqueId=Guid.NewGuid(),Name="测试页",Type="Basic",Id=1,Width=800,Height=480,ConfigFileName=Path.Combine(root,"contract-page.xml"),Graphicses=new List<ContractGraphic>()};
    var view=new ContractView();
    page.Graphicses.AddRange(new[]{Graphic("same",1),Graphic("middle",2),Graphic("same",3),Graphic("last",4)});
@@ -91,7 +130,8 @@ public static class DrawingContractsHarness {
    Check(Convert.ToInt32(first["total_count"])==4&&Items(first["items"]).Length==2,"First page must contain two of four objects");
    Check(Convert.ToString(first["scope"])=="active_page_top_level_only","Scope must match the installed layout checker contract");
    Check(Convert.ToInt32(first["next_offset"])==2&&!(bool)first["complete"],"First page must retain a continuation");
-   Check(Items(first["duplicate_names"]).SequenceEqual(new object[]{"same"}),"A duplicate on another page must remain visible");
+   var duplicateRows=Items(first["duplicate_names"]).Cast<Dictionary<string,object>>().ToArray();
+   Check(duplicateRows.Length==1&&Convert.ToString(duplicateRows[0]["name"])=="same"&&Convert.ToInt32(duplicateRows[0]["count"])==2&&Convert.ToInt32(first["duplicate_name_count"])==1,"A duplicate on another page must retain the published name/count structure and total");
    var second=Snapshot(D("offset",2,"limit",2),view,page);
    Check(second["next_offset"]==null&&(bool)second["complete"],"Last page must complete");
    var rows=Items(second["items"]).Cast<Dictionary<string,object>>().ToArray();
@@ -99,6 +139,17 @@ public static class DrawingContractsHarness {
    var filtered=Snapshot(D("names",new object[]{"same","missing"},"limit",1),view,page);
    Check(Convert.ToInt32(filtered["matched_count"])==2&&Items(filtered["missing_names"]).SequenceEqual(new object[]{"missing"}),"Filtered identity diagnostics must use all matches");
    Check((bool)filtered["filtered"]&&!(bool)filtered["includes_inherited"]&&!(bool)filtered["expands_groups"],"Scope limitations must be explicit");
+   Check(!(bool)filtered["common_composition_included"]&&!(bool)filtered["nested_children_included"],"Published common and nested composition flags must remain available");
+   // 只读名称查询需覆盖旧工程已有的长名称和换行，不应继承新建控件的命名约束。
+   page.Graphicses[1].Comment=new String('x',512);
+   Check(Convert.ToInt32(Snapshot(D("names",new object[]{page.Graphicses[1].Comment}),view,page)["matched_count"])==1,"Snapshot must accept the published 512-character name limit");
+   Reject(()=>Snapshot(D("names",new object[]{new String('x',513)}),view,page),"Snapshot name exceeds 512 characters");
+   page.Graphicses[1].Comment=" \r\n ";
+   Check(Convert.ToInt32(Snapshot(D("names",new object[]{page.Graphicses[1].Comment}),view,page)["matched_count"])==1,"Snapshot must match existing whitespace and control-character names exactly");
+   page.Graphicses[1].Comment="middle";
+   var crowded=new ContractPage{UniqueId=Guid.NewGuid(),Name="重复名称页",Type="Basic",Id=2,Width=800,Height=480,Graphicses=Enumerable.Range(0,101).SelectMany(i=>new[]{Graphic("dup"+i,1),Graphic("dup"+i,2)}).ToList()};
+   var duplicateLimit=Snapshot(D("limit",1),view,crowded);
+   Check(Convert.ToInt32(duplicateLimit["duplicate_name_count"])==101&&Items(duplicateLimit["duplicate_names"]).Length==100,"Duplicate diagnostics must retain the full count while bounding the returned list");
    var model=(Dictionary<string,object>)rows[0]["model"];
    var reference=Invoke("Ref",D("ref",model["$ref"]));
    Check(Object.ReferenceEquals(reference,page.Graphicses[2]),"Returned handle must resolve to the exact object");
@@ -108,7 +159,10 @@ public static class DrawingContractsHarness {
    Reject(()=>Snapshot(D("offset",0.5),view,page),"Fractional offset");
    Reject(()=>Snapshot(D("limit",true),view,page),"Boolean limit");
    Reject(()=>Snapshot(D("names",new object[]{"same","same"}),view,page),"Repeated filter names");
-   page.Id=29000;Reject(()=>Snapshot(D(),view,page),"Reserved page");page.Id=1;
+   page.Id=29000;Check(Convert.ToInt32(Snapshot(D(),view,page)["total_count"])==4,"Reserved pages remain readable");
+   Reject(()=>Invoke("DrawingCreateMany",D(),view,page,null),"Reserved page creation");page.Id=1;
+   page.Type="Common";Check(Convert.ToInt32(Snapshot(D(),view,page)["total_count"])==4,"Common pages remain readable");
+   Reject(()=>Invoke("DrawingCreateMany",D(),view,page,null),"Common page creation");page.Type="Basic";
    var good=Widget("new");
    var batch=Invoke("ValidateBatchSpecifications",D("widgets",new object[]{good}),page);
    Check(Items(batch).Length==1,"Valid declaration should succeed without constructing tool");
@@ -121,6 +175,8 @@ public static class DrawingContractsHarness {
    Reject(()=>Invoke("ValidateBatchSpecifications",D("widgets",new object[]{forbidden}),page),"Hidden geometry override");
    forbidden["properties"]=new object[]{D("member","Parent.Comment","value","changed")};
    Reject(()=>Invoke("ValidateBatchSpecifications",D("widgets",new object[]{forbidden}),page),"Parent traversal");
+   forbidden["properties"]=new object[]{D("member","IsReferenced","value",false)};
+   Reject(()=>Invoke("ValidateBatchSpecifications",D("widgets",new object[]{forbidden}),page),"Reference lifecycle override");
    forbidden["properties"]=new object[]{D("member","Settings.Font","value",D("$ref","shared"))};
    Reject(()=>Invoke("ValidateBatchSpecifications",D("widgets",new object[]{forbidden}),page),"Shared reference assignment");
    var addresses=Widget("bad");addresses["local_addresses"]=new object[]{D("member","Settings.Address","address",-1)};
