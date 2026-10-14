@@ -27,7 +27,7 @@ namespace FStudioMcp {
   static Dictionary<string,Type> commands;
   // 仅缓存已经加载的类型元数据；查找失败不缓存，允许 FStudio 后续加载插件。
   static readonly ConcurrentDictionary<string,Type> nativeTypes=new ConcurrentDictionary<string,Type>(StringComparer.Ordinal);
-  static string workspace, stateDir, pipeName;
+  static string workspace, stateDir, pipeName, nativeLogFile, runtimeProfile;
   static Dictionary<string,object> Obj(params object[] values) {var d=new Dictionary<string,object>();for(int i=0;i<values.Length;i+=2)d[(string)values[i]]=values[i+1];return d;}
   static string S(Dictionary<string,object> a,string key) {return Convert.ToString(a[key]);}
   static JavaScriptSerializer Json() {return new JavaScriptSerializer{MaxJsonLength=8000000};}
@@ -37,6 +37,9 @@ namespace FStudioMcp {
    var config=Json().Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(location,"host-settings.json")));
    workspace=Path.GetFullPath(S(config,"workspace")).TrimEnd('\\')+"\\";
    stateDir=Path.GetFullPath(S(config,"state_directory"));Directory.CreateDirectory(stateDir);
+   runtimeProfile=config.ContainsKey("profile")?S(config,"profile"):"auto";
+   nativeLogFile=config.ContainsKey("log_file")?S(config,"log_file"):Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"Flexem","FStudio3","Logs","Log.txt");
+   if(config.ContainsKey("bin")&&!String.Equals(Path.GetFullPath(S(config,"bin")).TrimEnd('\\'),Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Host installation does not match configured Bin directory");
    pipeName="fstudio-mcp-"+Process.GetCurrentProcess().Id;
    Log("宿主接口已启动。后台执行，仅原生画布显示绘图变化。");
    File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.4.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
@@ -115,7 +118,7 @@ namespace FStudioMcp {
   }
   static object Handle(Dictionary<string,object> a) {
    var op=S(a,"op");
-   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.4.0","features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
+   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.5.0","runtime_profile",runtimeProfile,"native_log_file",nativeLogFile,"application",Process.GetCurrentProcess().MainModule.FileName,"dto_version",Native("Flexem.Studio.HMI.Window.HMIWindowInfoDto").Assembly.GetName().Version.ToString(),"features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
    if(op=="job") {lock(gate){Dictionary<string,object> j;if(!jobs.TryGetValue(S(a,"job_id"),out j))throw new ArgumentException("Unknown job");return new Dictionary<string,object>(j);}}
    var timer=Stopwatch.StartNew();
    var id=Guid.NewGuid().ToString("N");var job=Obj("job_id",id,"operation",op,"status","queued");lock(gate)jobs[id]=job;

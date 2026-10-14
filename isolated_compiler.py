@@ -24,7 +24,10 @@ class IsolatedCompiler:
         for name in ('FStudioMcp.Visible.dll','FStudioMcp.addin'):
             shutil.copy2(Path(addin_source)/name,addin/name)
         state=snapshot.artifact_dir/'host'
-        (addin/'host-settings.json').write_text(json.dumps(dict(workspace=str(snapshot.owner),state_directory=str(state))),encoding='utf8')
+        from runtime_profile import RuntimeProfile
+        profile = RuntimeProfile.discover(bin_dir)
+        (addin/'host-settings.json').write_text(json.dumps(dict(workspace=str(snapshot.owner),state_directory=str(state),
+            bin=str(profile.bin),profile=profile.name,log_file=str(profile.log_file))),encoding='utf8')
         self.host=VisibleHost(state/'endpoint.json')
         self.process=DesktopProcess(Path(bin_dir)/'FStudio.exe',
             ['-addindir:'+str(addin),str(snapshot.project)],cwd=bin_dir)

@@ -48,7 +48,8 @@ namespace FStudioMcp {
     var type=Native("Flexem.Studio.HMIWizard.HMIProjectInfo");
     var fetch=type.GetMethods(BindingFlags.Public|BindingFlags.Static|BindingFlags.FlattenHierarchy).Single(m=>m.Name=="FetchAsChild"&&m.GetParameters().Length==1&&m.GetParameters()[0].ParameterType==typeof(string));
     var info=fetch.Invoke(null,new object[]{temporary});
-    if(Convert.ToString(Member(info,"Name"))!=S(a,"model"))throw new ArgumentException("Template model identity mismatch");
+    var actualName=Convert.ToString(Member(info,"Name"));
+    if(actualName!=S(a,"model")&&(!a.ContainsKey("model_alias")||actualName!=S(a,"model_alias")))throw new ArgumentException("Template model identity mismatch: actual="+actualName+", expected="+S(a,"model"));
     var creator=BackgroundProjectCreator();var create=creator.GetType().GetMethod("Create");
     var step=Enum.Parse(create.GetParameters()[3].ParameterType,"Step1");
     string entry=Convert.ToString(create.Invoke(creator,new object[]{workspace.TrimEnd('\\'),name,info,step}));

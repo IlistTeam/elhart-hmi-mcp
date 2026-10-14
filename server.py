@@ -23,11 +23,12 @@ import zipfile
 from visible_host import VisibleHost
 from isolated_build_manager import IsolatedBuildManager
 from canvas_spec import expand_widgets
+from runtime_profile import RuntimeProfile, default_bin
 
 HERE = Path(__file__).resolve().parent
 NAMESPACE = '{http://schemas.flexem.com/fs/model/1}'
 SUPPORTED_PROTOCOLS = ('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
-DEFAULT_BIN = Path(r'C:\Program Files (x86)\Flexem\FStudio 3.x\Bin')
+DEFAULT_BIN = default_bin()
 
 
 def schema(props=None, required=()):
@@ -265,11 +266,12 @@ class NativeBridge:
 
 
 class FStudio:
-    def __init__(self, workspace, bin_dir):
+    def __init__(self, workspace, bin_dir, profile='auto'):
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.bin = bin_dir.resolve()
-        self.templates = self.bin.parent / 'Template/HMI/zh'
+        self.profile = RuntimeProfile.discover(self.bin, profile)
+        self.templates = self.profile.templates
         self.native = NativeBridge(self.bin)
         self.visible = VisibleHost(HERE/'artifacts/visible-host/endpoint.json')
         self.builds = IsolatedBuildManager(HERE,self.workspace,self.bin)
@@ -303,20 +305,27 @@ class FStudio:
         return name
 
     def _template(self, model):
+        if self.profile.name == 'elhart' and model not in self.profile.model_catalog():
+            raise ValueError('Model is not in the installed Elhart OEM catalog')
         path = self.templates / (self.model_name(model) + '.tpl')
         if not path.is_file(): raise ValueError('Installed model template not found')
         return path
 
     def list_models(self):
         models = []
+        installed = self.profile.model_catalog()
         for tpl in sorted(self.templates.glob('F[0-9]*.tpl')):
+            if self.profile.name == 'elhart' and tpl.stem not in installed:
+                continue
             try:
                 with zipfile.ZipFile(tpl, metadata_encoding='gbk') as z:
                     for n in z.namelist():
                         if n.startswith('HMI/Frame/Basic/') and n.endswith('.wcfg'):
                             r = ET.fromstring(z.read(n))
                             if r.findtext(NAMESPACE+'Id') == '1':
-                                models.append({'model': tpl.stem, 'width': int(r.findtext(NAMESPACE+'Width')), 'height': int(r.findtext(NAMESPACE+'Height'))}); break
+                                info = dict(installed.get(tpl.stem, {}), model=tpl.stem,
+                                            width=int(r.findtext(NAMESPACE+'Width')), height=int(r.findtext(NAMESPACE+'Height')))
+                                models.append(info); break
             except (zipfile.BadZipFile, ET.ParseError, UnicodeError, ValueError): continue
         return {'models': models}
 
@@ -468,6 +477,11 @@ class FStudio:
         return self.visible.read('state')
 
     def visible_start(self):
+        settings = json.loads((HERE/'artifacts/visible-addin/host-settings.json').read_text(encoding='utf-8-sig'))
+        if Path(settings['workspace']).resolve() != self.workspace:
+            raise ValueError('Server and host workspaces differ; run install-visible-host.ps1 -Workspace with the server workspace')
+        if Path(settings.get('bin', self.bin)).resolve() != self.bin:
+            raise ValueError('Server and host installation paths differ; rebuild the host for this installation')
         return self.visible.start(self.bin)
 
     @staticmethod
@@ -485,7 +499,15 @@ class FStudio:
         if dest.exists(): raise ValueError('Destination already exists')
         with zipfile.ZipFile(self._template(model),metadata_encoding='gbk') as template:
             xml = template.read('HMI/System/ConnectInfo.cfg').decode('utf-8-sig')
-        return self.visible.request('create_project',name=name,model=model,template_xml=xml)
+        identity = ET.fromstring(xml)
+        if identity.findtext(NAMESPACE+'Name') != model:
+            raise ValueError('Template model identity mismatch')
+        installed = self.profile.model_catalog().get(model, {})
+        identifier = identity.findtext(NAMESPACE+'ID')
+        if installed and str(installed['id']) != identifier:
+            raise ValueError('Template model ID differs from installed catalog')
+        return self.visible.request('create_project', name=name, model=model, template_xml=xml,
+                                    model_id=identifier, model_alias=installed.get('display_name',model))
 
     def visible_output(self):
         return self.visible.read('output')
@@ -924,7 +946,7 @@ class FStudio:
                 attrs = element.attrib
                 if any(k.lower() in ('command','class','commandid') for k in attrs):
                     commands.append({'manifest':str(file.relative_to(self.bin.parent)),'element':element.tag,'attributes':dict(attrs)})
-        return {'mcp_tools':[t['name'] for t in TOOLS], 'native_types':self.catalog(limit=1)['total'],
+        result = {'mcp_tools':[t['name'] for t in TOOLS], 'native_types':self.catalog(limit=1)['total'],
                 'installed_declarations':commands, 'declarations_status':'metadata_only_not_callable',
                 'coverage':{'dto_read_and_leaf_patch':'implemented_native_roundtrip','convenience_widget_creation':['text','rectangle','numeric_display'],
                 'convenience_widget_gui_compatibility':'not_verified_for_all_models',
@@ -949,10 +971,24 @@ class FStudio:
                 'visible_prefix':'compatibility_names_for_background_host',
                 'legacy_native_commands':'disabled_BACKGROUND_ONLY_no_dispatch',
                 'offline_edits':'close_target_project_before_modifying_files'}}
+        # Upstream certificates describe a different editor version, not this installation.
+        result['upstream_validation_baseline'] = result.pop('validation_baseline')
+        result['upstream_coverage'] = result.pop('coverage')
+        version = self.native.call('health')['dto_version']
+        result['runtime_profile'] = self.profile.describe(version)
+        result['coverage'] = {name: 'implemented_not_behavior_verified_for_this_installation'
+                              for name in result['upstream_coverage']}
+        result['coverage']['simulation'] = 'not_implemented'
+        result['coverage']['hardware'] = 'not_verified'
+        return result
 
     def call(self, name, args):
         if name == 'fstudio_health':
-            return dict(self.native.call('health'), workspace=str(self.workspace), supported_widget_kinds=['text','rectangle','numeric_display'])
+            health = self.native.call('health')
+            return dict(health, workspace=str(self.workspace), runtime_profile=self.profile.describe(health['dto_version']),
+                        supported_widget_kinds=['text','rectangle','numeric_display'])
+        if hasattr(self, 'profile') and not BY_NAME[name]['annotations']['readOnlyHint']:
+            self.profile.require_supported(self.native.call('health')['dto_version'])
         return getattr(self, name.removeprefix('fstudio_'))(**args)
 
 
@@ -983,7 +1019,7 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'fstudio-dll-mcp','version':'0.4.0'},
+                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.5.0'},
                           'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
@@ -1009,11 +1045,12 @@ def serve(service):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--workspace', type=Path, default=HERE/'projects')
-    parser.add_argument('--fstudio-bin', type=Path, default=DEFAULT_BIN)
+    parser.add_argument('--profile', choices=('auto','elhart','fstudio'), default='auto')
+    parser.add_argument('--fstudio-bin', '--studio-bin', dest='fstudio_bin', type=Path)
     args = parser.parse_args()
     if hasattr(sys.stdin, 'reconfigure'): sys.stdin.reconfigure(encoding='utf-8')
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8')
-    service = FStudio(args.workspace, args.fstudio_bin)
+    service = FStudio(args.workspace, args.fstudio_bin or default_bin(args.profile), args.profile)
     try: serve(service)
     finally: service.native.close()
 
