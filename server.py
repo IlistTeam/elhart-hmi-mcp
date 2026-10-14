@@ -103,7 +103,7 @@ TOOLS += [
     tool('fstudio_visible_run_command','Disabled compatibility endpoint. Always returns BACKGROUND_ONLY without constructing or dispatching native commands. Use dedicated background build/page/canvas/model APIs; command discovery does not imply executable command access.',schema({'command':STR},['command'])),
     tool('fstudio_visible_save','Save the active workspace project through background native services. Returns asynchronous job ID; no execution-log window is required.',schema(),False),
     tool('fstudio_visible_job','Read status/result/error of an existing background host job. Poll the same ID; do not restart after a nonterminal observation.',schema({'job_id':STR},['job_id'])),
-    tool('fstudio_visible_start','Start FStudio with the local background host add-in, or reuse a verified running endpoint. The editor canvas can remain visible for drawing; no execution-log window is required. No administrator installation required.',schema(),False),
+    tool('fstudio_visible_start','Start the installed editor with the local host add-in, or reuse a verified endpoint. Optional project selects the initial workspace project only for a new process, avoiding automatic reopening of a busy previous project. Reusing a host does not switch its project; use visible_open_project. No administrator installation required.',schema({'project':STR}),False),
     tool('fstudio_visible_create_project','Create a new project through native HMIProjectCreator in the background host and open it in the editor. Uses the installed model template and refuses existing destinations. Returns asynchronous job ID.',schema({'name':KEY,'model':KEY},['name','model']),False),
     tool('fstudio_visible_output','Read native FStudio output categories including compiler messages.',schema()),
     tool('fstudio_visible_close_project','Close the active workspace project through background native services. While any open view is dirty the host refuses before calling native close, because the native save-changes dialog cannot be answered in background mode and the close job then never returns. Save first, or set discard_unsaved=true to skip the native window check and drop unsaved canvas changes.',schema({'discard_unsaved':{'type':'boolean'}}),False),
@@ -191,6 +191,13 @@ TOOLS.append(tool('fstudio_canvas_configure_bit_indicator',
     'Preserves existing configured indicators by refusing replacement. Save and compile to persist; no runtime or hardware I/O.',
     schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295},
             'off_text':KEY,'on_text':KEY}, ['ref','address','off_text','on_text']), False))
+TOOLS.append(tool('fstudio_simulation_start',
+    'Start the installed offline simulator via native ISimulateOperation for the saved workspace project. '
+    'Requires clean views, forces offline mode, may compile and show native simulator UI. '
+    'Returns launch evidence only; no hardware I/O or visual/interaction acceptance is claimed.', schema(), False))
+TOOLS.append(tool('fstudio_simulation_state',
+    'Read native offline simulator flags and newly observed FCS process candidates. '
+    'Candidates do not prove ownership or correct rendering; no simulator is stopped.', schema()))
 BY_NAME = {t['name']: t for t in TOOLS}
 
 
@@ -481,13 +488,17 @@ class FStudio:
     def visible_state(self):
         return self.visible.read('state')
 
-    def visible_start(self):
+    def visible_start(self, project=None):
         settings = json.loads((HERE/'artifacts/visible-addin/host-settings.json').read_text(encoding='utf-8-sig'))
         if Path(settings['workspace']).resolve() != self.workspace:
             raise ValueError('Server and host workspaces differ; run install-visible-host.ps1 -Workspace with the server workspace')
         if Path(settings.get('bin', self.bin)).resolve() != self.bin:
             raise ValueError('Server and host installation paths differ; rebuild the host for this installation')
-        return self.visible.start(self.bin)
+        initial_project=None
+        if project is not None:
+            folder=self.project(project)
+            initial_project=next(folder.glob('*.fsprj'))
+        return self.visible.start(self.bin, project=initial_project)
 
     @staticmethod
     def check_native_project_directory(directory):
@@ -517,6 +528,12 @@ class FStudio:
 
     def visible_output(self):
         return self.visible.read('output')
+
+    def simulation_start(self):
+        return self.visible.request('simulation_start')
+
+    def simulation_state(self):
+        return self.visible.read('simulation_state')
 
     def visible_close_project(self, discard_unsaved=False):
         return self.visible.request('close_project', discard_unsaved=bool(discard_unsaved))
@@ -987,7 +1004,7 @@ class FStudio:
         result['runtime_profile'] = self.profile.describe(version)
         result['coverage'] = {name: 'implemented_not_behavior_verified_for_this_installation'
                               for name in result['upstream_coverage']}
-        result['coverage']['simulation'] = 'not_implemented'
+        result['coverage']['simulation'] = 'offline_native_launch_implemented_runtime_acceptance_not_verified'
         result['coverage']['hardware'] = 'not_verified'
         return result
 

@@ -10,6 +10,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import FStudio, DEFAULT_BIN, HERE
 from visible_host import VisibleHost
+from build_snapshot import input_manifest
 
 
 def complete(host, operation, **arguments):
@@ -34,6 +35,8 @@ def main():
     parser.add_argument('--bin', type=Path, default=DEFAULT_BIN)
     parser.add_argument('--build', action='store_true')
     parser.add_argument('--widgets', action='store_true')
+    parser.add_argument('--simulate', action='store_true')
+    parser.add_argument('--from-project', type=Path)
     args = parser.parse_args()
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
@@ -55,7 +58,21 @@ def main():
         report['dll_sha256'] = {name: hashlib.sha256((args.bin/name).read_bytes()).hexdigest()
                                 for name in ('Flexem.Studio.Dtos.dll', 'Flexem.Studio.Build.dll',
                                              'Flexem.Studio.Core.dll', 'FStudio.exe')}
-        report['launch'] = service.visible_start()
+        cloned_entry=None
+        if args.from_project:
+            source=service.project(args.from_project.resolve())
+            target=service.inside(args.name)
+            if target.exists():raise ValueError('Test destination already exists')
+            before=input_manifest(source)
+            target.mkdir()
+            for relative in before:
+                copied=target/relative;copied.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(source/relative,copied)
+            assert before==input_manifest(source), 'Source changed while copying'
+            entry=next(target.glob('*.fsprj'))
+            cloned_entry=target/(args.name+'.fsprj');entry.rename(cloned_entry)
+            report['created']=dict(project=str(cloned_entry),copied_saved_native_project=True,source_unchanged=True)
+        report['launch'] = service.visible_start(project=cloned_entry)
         deadline = time.monotonic() + 60
         while not service.visible.endpoint.is_file():
             if time.monotonic() > deadline:
@@ -63,17 +80,20 @@ def main():
             time.sleep(.25)
         report['host'] = service.visible.request('health')
         assert report['host']['runtime_profile'] == 'elhart'
-        report['created'] = service.visible_create_project(args.name, 'F010')
-        job = report['created']
-        deadline = time.monotonic() + 90
-        while job['status'] not in ('completed','failed'):
-            if time.monotonic() > deadline:
-                raise TimeoutError(f'Create outcome pending; inspect job {job["job_id"]}')
-            time.sleep(.1)
-            job = service.visible.request('job', job_id=job['job_id'])
-        if job['status'] == 'failed':
-            raise RuntimeError(job['error'])
-        report['created'] = job['result']
+        if cloned_entry is None:
+            report['created'] = service.visible_create_project(args.name, 'F010')
+            job = report['created']
+            deadline = time.monotonic() + 90
+            while job['status'] not in ('completed','failed'):
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f'Create outcome pending; inspect job {job["job_id"]}')
+                time.sleep(.1)
+                job = service.visible.request('job', job_id=job['job_id'])
+            if job['status'] == 'failed':
+                raise RuntimeError(job['error'])
+            report['created'] = job['result']
+        else:
+            report['opened_copy']=complete(service.visible,'open_project',file=str(cloned_entry))
         report['state'] = complete(service.visible, 'state')
         report['pages'] = complete(service.visible, 'pages_list')
         if args.widgets:
@@ -102,16 +122,19 @@ def main():
                             text_style=dict(font_size=22,font_name='Arial'),x=218,y=205,width=75,height=50),
                        dict(name='main.circle',tool=tool+'EllipseTool',x=560,y=200,width=60,height=60),
                        dict(name='main.start',tool=tool+'SwitchTool',x=40,y=330,width=200,height=75)]
-            report['widgets_created'] = service._wait_job(service.canvas_create_many(widgets), timeout=90)
+            if cloned_entry is None:
+                report['widgets_created'] = service._wait_job(service.canvas_create_many(widgets), timeout=90)
             snapshot = complete(service.visible,'drawing_snapshot')
             report['layout_before_save'] = snapshot
             button = next(x for x in snapshot['items'] if x['name']=='main.start')
-            report['button_action'] = complete(service.visible,'drawing_configure_bit_switch',
-                                               ref=button['model']['$ref'],action='Switch',address=20)
-            report['button_indicator'] = complete(service.visible,'drawing_configure_bit_indicator',
-                ref=button['model']['$ref'],address=20,off_text='Пуск',on_text='Работает')
+            if cloned_entry is None:
+                report['button_action'] = complete(service.visible,'drawing_configure_bit_switch',
+                                                   ref=button['model']['$ref'],action='Switch',address=20)
+                report['button_indicator'] = complete(service.visible,'drawing_configure_bit_indicator',
+                    ref=button['model']['$ref'],address=20,off_text='Пуск',on_text='Работает')
             report['button_properties'] = complete(service.visible,'inspect_object',ref=button['model']['$ref'])
-            report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
+            if cloned_entry is None:
+                report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
         report['saved'] = complete(service.visible, 'save_project')
         entry = report['saved']['project']
         report['closed'] = complete(service.visible, 'close_project')
@@ -140,6 +163,9 @@ def main():
                 result = service.builds.status(result['build_id'])
             report['build'] = result
             assert result.get('compiler_success') and result.get('cleanup_complete'), result
+        if args.simulate:
+            report['simulator_launch'] = complete(service.visible, 'simulation_start')
+            report['simulator_state'] = complete(service.visible, 'simulation_state')
         report['success'] = True
     except Exception as error:
         report['success'] = False

@@ -46,7 +46,7 @@ namespace FStudioMcp {
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
+  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
   /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
   static Type Native(string name) {
    Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
@@ -81,6 +81,7 @@ namespace FStudioMcp {
    string op=S(a,"op");
    lock(buildGate)if(activeBuild!=null&&!activeBuild.Finalized&&!IsReadOnly(op)&&op!="build_cancel")throw new InvalidOperationException("A background build owns the project; wait for its build_id before changing or switching the project");
    if(op.StartsWith("build_"))return BackgroundBuildOperation(a);
+   if(op=="simulation_start"||op=="simulation_state")return SimulationOperation(a);
    if(op=="sampling_add")return AddLocalSampling(a);
    if(op=="pages_list"||op.StartsWith("page_"))return NativePageOperation(a);
    if(op=="state")return LiveState();
