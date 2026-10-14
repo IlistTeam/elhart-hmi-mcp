@@ -164,7 +164,7 @@ namespace FStudioMcp {
   }
 
   static object PageStatic(string type,string method,params object[] args) {
-   var choices=Native(type).GetMethods(BindingFlags.Public|BindingFlags.Static).Where(m=>m.Name==method&&!m.ContainsGenericParameters&&m.GetParameters().Length==args.Length&&m.GetParameters().Select((p,i)=>args[i]==null||p.ParameterType.IsInstanceOfType(args[i])).All(x=>x)).ToArray();
+   var choices=Native(type).GetMethods(BindingFlags.Public|BindingFlags.Static|BindingFlags.FlattenHierarchy).Where(m=>m.Name==method&&!m.ContainsGenericParameters&&m.GetParameters().Length==args.Length&&m.GetParameters().Select((p,i)=>args[i]==null||p.ParameterType.IsInstanceOfType(args[i])).All(x=>x)).ToArray();
    if(choices.Length!=1)throw new InvalidOperationException("Native page method is missing or ambiguous: "+type+"."+method);
    return choices[0].Invoke(null,args);
   }

@@ -201,6 +201,9 @@ TOOLS.append(tool('fstudio_simulation_state',
 TOOLS.append(tool('fstudio_canvas_configure_navigation',
     'Initialize an empty SwitchInfo with a native KeyDown transition to an existing Basic page UUID and a label in every configured language. Existing actions are preserved by refusal. Save, reopen and compile; actual runtime transition remains a separate test.',
     schema({'ref':STR,'target_uuid':PAGE_UUID,'text':KEY},['ref','target_uuid','text']),False))
+TOOLS.append(tool('fstudio_canvas_configure_word_indicator',
+    'Initialize an empty committed SwitchInfo as a local UInt16 word indicator: values 0 and 1 plus ShowErrorState fallback. Supply three 64x64 state images. Creates a native project graph, three graph/tag states, blank captions and square bounds. Existing conditions/actions and graph resources are protected. Save, reopen, compile and perform separate runtime acceptance.',
+    schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295},'files':{'type':'array','minItems':3,'maxItems':3,'items':STR}},['ref','address','files']),False))
 TOOLS.append(tool('fstudio_canvas_history','Read undo/redo entries of the active native canvas.',schema()))
 TOOLS.append(tool('fstudio_canvas_undo','Undo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
 TOOLS.append(tool('fstudio_canvas_redo','Redo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
@@ -813,6 +816,9 @@ class FStudio:
 
     def canvas_configure_navigation(self, **args):
         return self.visible.request('drawing_configure_navigation', **args)
+
+    def canvas_configure_word_indicator(self, **args):
+        return self.visible.request('drawing_configure_word_indicator', **args)
 
     def canvas_history(self):return self.visible.read('drawing_history')
     def canvas_undo(self):return self.visible.request('drawing_undo')

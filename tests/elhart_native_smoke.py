@@ -31,7 +31,7 @@ def complete(host, operation, **arguments):
     return result
 
 
-def transparency_fixture(path):
+def transparency_fixture(path,color=(18,148,108)):
     """Deterministic test data, not a screenshot or interface render."""
     def chunk(kind,data):
         return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
@@ -40,7 +40,7 @@ def transparency_fixture(path):
         row=bytearray([0])
         for x in range(64):
             radius=(x-31.5)**2+(y-31.5)**2
-            row.extend((18,148,108,255 if radius<26**2 else 96 if radius<29**2 else 0))
+            row.extend((*color,255 if radius<26**2 else 96 if radius<29**2 else 0))
         pixels.append(bytes(row))
     path.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!2I5B',64,64,8,6,0,0,0))+
                     chunk(b'IDAT',zlib.compress(b''.join(pixels)))+chunk(b'IEND',b''))
@@ -100,6 +100,30 @@ def extended_canvas(service,destination,report):
     return definitions
 
 
+def indicator_canvas(service,report):
+    definition=dict(name='main.status',tool='Flexem.Studio.GraphicsDesigner.Tools.SwitchTool',
+                    x=560,y=330,width=64,height=64)
+    service._wait_job(service.canvas_create_many([definition]))
+    items={x['name']:x for x in complete(service.visible,'drawing_snapshot')['items']}
+    value=items['main.value']['model']['$ref']
+    report['signed_type']=complete(service.visible,'set_member',ref=value,member='NormalData.DataType',value='Int16')
+    report['signed_settings']=complete(service.visible,'set_members',changes=[
+        dict(ref=value,member='NormalData.ReadAddress.Raw.DataType',value='Int16'),
+        dict(ref=value,member='NormalData.NumericLimit.MinLimit.Constant',value=-32768),
+        dict(ref=value,member='NormalData.NumericLimit.MaxLimit.Constant',value=32767),
+        dict(ref=value,member='NormalData.IsShowZero',value=True)])
+    project=Path(complete(service.visible,'state')['project']).parent
+    image_dir=project/'HMI/Lib/ImportImage';image_dir.mkdir(parents=True,exist_ok=True)
+    files=[]
+    for name,color in [('off',(112,128,144)),('on',(18,148,108)),('fallback',(245,158,11))]:
+        file=image_dir/('indicator-'+name+'.png')
+        if file.exists():raise AssertionError('Do not overwrite an existing state resource')
+        transparency_fixture(file,color);files.append(str(file))
+    report['word_indicator']=complete(service.visible,'drawing_configure_word_indicator',
+        ref=items['main.status']['model']['$ref'],address=102,files=files)
+    return definition
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf8')
     parser = argparse.ArgumentParser()
@@ -110,6 +134,7 @@ def main():
     parser.add_argument('--simulate', action='store_true')
     parser.add_argument('--from-project', type=Path)
     parser.add_argument('--extended',action='store_true')
+    parser.add_argument('--indicators',action='store_true')
     parser.add_argument('--build-outcome',choices=('success','failure','cancel'),default='success')
     args = parser.parse_args()
     if args.build_outcome!='success' and not args.build:
@@ -117,6 +142,7 @@ def main():
     if args.build_outcome=='failure' and not args.widgets:
         parser.error('The intentional compiler failure requires --widgets')
     if args.extended and not args.widgets:parser.error('--extended requires --widgets')
+    if args.indicators and not args.widgets:parser.error('--indicators requires --widgets')
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
     editor = TestEditor()
@@ -237,6 +263,7 @@ def main():
             if cloned_entry is None:
                 report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
             if args.extended:widgets.extend(extended_canvas(service,destination,report))
+            if args.indicators:widgets.append(indicator_canvas(service,report))
         report['saved'] = complete(service.visible, 'save_project')
         entry = report['saved']['project']
         report['closed'] = complete(service.visible, 'close_project')
@@ -254,6 +281,30 @@ def main():
                 action=complete(service.visible,'read_member',ref=items['main.next']['model']['$ref'],member='SwitchSettings.ActionList',index=0)['value']['$ref']
                 assert complete(service.visible,'read_member',ref=action,member='Window')['value']==report['navigation']['target_uuid']
                 report['image_and_navigation_persisted']=True
+            if args.indicators:
+                items={x['name']:x for x in snapshot['items']}
+                status=items['main.status'];status_ref=status['model']['$ref']
+                assert status['bounds']['width']==status['bounds']['height']==64
+                word=complete(service.visible,'read_member',ref=status_ref,member='Indicator.Usage.RegisterControl.Word')['value']['$ref']
+                conditions=complete(service.visible,'read_member',ref=word,member='Statuses')['items']
+                assert len(conditions)==2
+                for value,condition in enumerate(conditions):
+                    assert complete(service.visible,'read_member',ref=condition['$ref'],member='ConditionType')['value']=='Range'
+                    assert complete(service.visible,'read_member',ref=condition['$ref'],member='WordCondition.ComparatorA')['value']=='Equal'
+                    assert complete(service.visible,'read_member',ref=condition['$ref'],member='WordCondition.Relationship')['value']=='None'
+                    assert complete(service.visible,'read_member',ref=condition['$ref'],member='WordCondition.VariableA.Constant')['value']==value
+                assert complete(service.visible,'read_member',ref=word,member='InvalidInput.Actions')['value']=='ShowErrorState'
+                tags=complete(service.visible,'read_member',ref=status_ref,member='Tag.Statuses')['items']
+                assert len(tags)==3
+                for tag in tags:
+                    for language in complete(service.visible,'read_member',ref=tag['$ref'],member='Items')['items']:
+                        assert complete(service.visible,'read_member',ref=language['$ref'],member='Text')['value']==''
+                assert len(complete(service.visible,'read_member',ref=status_ref,member='GraphProperty.GraphStateInfos')['items'])==3
+                numeric=items['main.value']['model']['$ref']
+                for member,expected in [('NormalData.DataType','Int16'),('NormalData.ReadAddress.Raw.DataType','Int16'),
+                    ('NormalData.IsShowZero',True),('NormalData.NumericLimit.MinLimit.Constant',-32768),('NormalData.NumericLimit.MaxLimit.Constant',32767)]:
+                    assert complete(service.visible,'read_member',ref=numeric,member=member)['value']==expected
+                report['word_indicator_and_signed_numeric_persisted']=True
             if args.build_outcome=='failure':
                 numeric_input=next(x for x in snapshot['items'] if x['name']=='main.input')
                 report['intentional_missing_device']=complete(service.visible,'set_member',

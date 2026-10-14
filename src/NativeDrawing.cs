@@ -45,7 +45,7 @@ namespace FStudioMcp {
    return view;
   }
   static object DesignerService(object context,string type){return CallNative(Member(context,"Services"),"GetService",Native(type));}
-  static void NativeSet(object target,string property,object value){var p=target.GetType().GetProperty(property);if(p==null||p.GetSetMethod()==null)throw new ArgumentException("Native property is not publicly writable: "+property);p.SetValue(target,ConvertArg(value,p.PropertyType),null);}
+  static void NativeSet(object target,string property,object value){if(target==null)throw new ArgumentException("Native property target is not initialized: "+property);var p=target.GetType().GetProperty(property);if(p==null||p.GetSetMethod()==null)throw new ArgumentException("Native property is not publicly writable: "+property);p.SetValue(target,ConvertArg(value,p.PropertyType),null);}
   static MethodInfo ToolHook(object tool,string name,int count){return tool.GetType().GetMethods(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic).SingleOrDefault(m=>m.Name==name&&m.GetParameters().Length==count);}
   /// <summary>补齐后台草稿的配方子模型；原生工具默认值省略这些数据，选定配方后会在保存时空引用。</summary>
   /// <param name="model">已关联当前项目、尚未加入画布的原生模型。</param>
@@ -285,6 +285,7 @@ namespace FStudioMcp {
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
    if(op=="drawing_configure_bit_indicator")return ConfigureBitIndicator(a,view);
+   if(op=="drawing_configure_word_indicator")return ConfigureWordIndicator(a,view);
    if(op=="drawing_configure_navigation")return ConfigureNavigation(a,view);
    if(op=="drawing_import_image")return ImportNativePicture(a,view);
    if(op=="drawing_history"||op=="drawing_undo"||op=="drawing_redo")return CanvasHistory(a,view);
