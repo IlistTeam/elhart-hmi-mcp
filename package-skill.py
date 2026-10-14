@@ -30,7 +30,7 @@ def package_files(profile='elhart'):
                 raise ValueError('Unexpected skill resource: ' + str(path))
             files['fstudio-skills/' + path.relative_to(skill).as_posix()] = path
     else:
-        for name in ('LICENSE','README.md','PLAN.md','docs/elhart-installation.md','docs/elhart-validation.md','docs/elhart-capabilities.md'):
+        for name in ('LICENSE','README.md','PLAN.md','docs/elhart-installation.md','docs/elhart-validation.md','docs/elhart-capabilities.md','docs/elhart-manual-acceptance.md'):
             files[prefix+'/'+name]=ROOT/name
     for name in MCP_FILES:
         files[prefix+'/' + name] = ROOT/name

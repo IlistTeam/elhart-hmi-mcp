@@ -42,6 +42,7 @@ class ReleasePackageTests(unittest.TestCase):
         files=packager.package_files('elhart')
         self.assertIn('elhart-hmi-mcp/src/NativeIndicators.cs',files)
         self.assertIn('elhart-hmi-mcp/docs/elhart-installation.md',files)
+        self.assertIn('elhart-hmi-mcp/docs/elhart-manual-acceptance.md',files)
         for name in files:
             self.assertTrue(name.startswith('elhart-hmi-mcp/'))
             self.assertIn(Path(name).suffix.lower(),('.md','.py','.ps1','.json','.cs',''))
