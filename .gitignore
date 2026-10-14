@@ -25,3 +25,24 @@ Thumbs.db
 *.log
 
 # 可复现回归测试随源码保存；测试生成的原生工程与报告放在 artifacts/ 或 projects/。
+
+# Elhart: native build products, local state and user evidence
+/bin/
+/obj/
+/vendor/
+/state/
+/evidence/
+*.dll
+*.exe
+*.pdb
+*.fsprj
+host-settings.json
+endpoint.json
+pending-update.json
+*.local.json
+*.user
+*.suo
+.vs/
+Desktop.ini
+*.tmp
+*.bak
