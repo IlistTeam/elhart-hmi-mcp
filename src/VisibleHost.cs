@@ -47,7 +47,7 @@ namespace FStudioMcp {
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="drawing_history"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
+  static bool IsReadOnly(string op) {return op=="contracts"||op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="drawing_history"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
   /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
   static Type Native(string name) {
    Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
@@ -80,7 +80,14 @@ namespace FStudioMcp {
   }
   static object OnUi(Dictionary<string,object> a) {
    string op=S(a,"op");
+   if(op=="contracts")return ProbeNativeContracts();
    lock(buildGate)if(activeBuild!=null&&!activeBuild.Finalized&&!IsReadOnly(op)&&op!="build_cancel")throw new InvalidOperationException("A background build owns the project; wait for its build_id before changing or switching the project");
+   if(op=="test_session_delayed_set") {
+    if(String.IsNullOrEmpty(testSessionToken)||S(a,"token")!=testSessionToken||Convert.ToInt32(a["pid"])!=Process.GetCurrentProcess().Id)throw new InvalidOperationException("Delay probe requires the owning test session");
+    RequireProject();if(!String.Equals(ProjectFile(),S(a,"project"),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Test project changed before the delay probe");
+    Thread.Sleep(6000);
+    return OnUi(new Dictionary<string,object>{{"op","set_member"},{"ref",a["ref"]},{"member","Position.X"},{"value",a["value"]}});
+   }
    if(op=="test_session_shutdown") {
     if(String.IsNullOrEmpty(testSessionToken)||!a.ContainsKey("token")||S(a,"token")!=testSessionToken||Convert.ToInt32(a["pid"])!=Process.GetCurrentProcess().Id)
      throw new InvalidOperationException("Shutdown requires the owning test session token and process id");
@@ -101,7 +108,7 @@ namespace FStudioMcp {
    if(op=="simulation_start")return SimulationOperation(a);
    if(op=="sampling_add")return AddLocalSampling(a);
    if(op=="pages_list"||op.StartsWith("page_"))return NativePageOperation(a);
-   if(op=="state")return LiveState();
+   if(op=="state") {if(nativeContracts==null)ProbeNativeContracts();return LiveState();}
    if(op=="output")return Output();
    if(op.StartsWith("drawing_"))return DrawingOperation(a);
    if(op=="create_project")return CreateProject(a);
@@ -140,7 +147,7 @@ namespace FStudioMcp {
    // Snapshots and token cancellation use only locked build state. Native
    // compilation can occupy the UI thread before BuildAsync returns its Task.
    if(op=="build_status"||op=="build_cancel")return BackgroundBuildOperation(a);
-   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.5.0","runtime_profile",runtimeProfile,"native_log_file",nativeLogFile,"application",Process.GetCurrentProcess().MainModule.FileName,"dto_version",Native("Flexem.Studio.HMI.Window.HMIWindowInfoDto").Assembly.GetName().Version.ToString(),"features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
+   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"native_contracts",nativeContracts,"workspace",workspace,"version","0.5.0","runtime_profile",runtimeProfile,"native_log_file",nativeLogFile,"application",Process.GetCurrentProcess().MainModule.FileName,"dto_version",Native("Flexem.Studio.HMI.Window.HMIWindowInfoDto").Assembly.GetName().Version.ToString(),"features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
    if(op=="job") {lock(gate){Dictionary<string,object> j;if(!jobs.TryGetValue(S(a,"job_id"),out j))throw new ArgumentException("Unknown job");return new Dictionary<string,object>(j);}}
    var timer=Stopwatch.StartNew();
    var id=Guid.NewGuid().ToString("N");var job=Obj("job_id",id,"operation",op,"status","queued");lock(gate)jobs[id]=job;

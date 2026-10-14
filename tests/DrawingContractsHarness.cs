@@ -70,6 +70,9 @@ public sealed class ContractTextNormal {
 }
 
 /// <summary>直接调用已编译宿主的真实验证和快照函数；使用内存页，不启动 FStudio、不读写工程。</summary>
+public class ContractSignatureFixture {
+ public void LoadFromFile(string path,byte[] bytes){}
+}
 public static class DrawingContractsHarness {
  static Type Host;
  static int Passed;
@@ -121,6 +124,9 @@ public static class DrawingContractsHarness {
    Host=Assembly.LoadFrom(Path.GetFullPath(args[0])).GetType("FStudioMcp.VisibleHost",true);
    string root=Path.GetFullPath(args[1]).TrimEnd('\\')+"\\";
    Host.GetField("workspace",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,root);
+   Check(Invoke("RequireContractMethod",typeof(ContractSignatureFixture),"LoadFromFile",false,typeof(void),new string[]{"System.String","System.Byte[]"}) is MethodInfo,"Contract inspection must select the exact native method shape");
+   Reject(()=>Invoke("RequireContractMethod",typeof(ContractSignatureFixture),"LoadFromFile",false,typeof(bool),new string[]{"System.String","System.Byte[]"}),"Changed native return type");
+   Reject(()=>Invoke("RequireContractMethod",typeof(ContractSignatureFixture),"LoadFromFile",false,typeof(void),new string[]{"System.String"}),"Changed native argument shape");
    var serializer=Invoke("Json");
    var largePayload="{\"data\":\""+new String('A',12*1024*1024)+"\"}";
    var decoded=(IDictionary)serializer.GetType().GetMethod("DeserializeObject").Invoke(serializer,new object[]{largePayload});

@@ -8,7 +8,7 @@ import tempfile
 
 
 # Generated indexes, native outputs and local backups are not compiler inputs.
-EXCLUDED_ROOTS=frozenset(('.mcp-backups','Bin','temp','Lucene'))
+EXCLUDED_ROOTS=frozenset(('.mcp-backups','Bin','Subbin','temp','Lucene'))
 
 
 def prune_recent_projects(snapshot_project=None, recent_file=None):

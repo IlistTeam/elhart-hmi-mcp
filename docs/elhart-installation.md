@@ -31,6 +31,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-visible-host.p
 тестовому проекту: автозагрузка предыдущего проекта может открыть предупреждение,
 если он уже занят другим экземпляром редактора.
 
+Первый visible_state проверяет контракты установленного SDK. Результат
+native_contracts доступен в health плагина; fstudio_visible_contracts
+повторяет проверку без изменения проекта. compatible подтверждает только
+сигнатуры типов, методов и конструктора, а не внешний вид или работу кнопок.
+
 Не считайте список инструментов или PID доказательством исправной работы.
 Сверяйте путь проекта, исполняемый файл, профиль, версию DTO и состояние задачи.
 При неизвестном исходе записи опрашивайте исходный job_id и читайте модель
@@ -53,6 +58,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-visible-host.p
 python -m unittest discover -s tests
 python tests\elhart_native_smoke.py --name Acceptance01 --widgets --build
 python tests\elhart_native_smoke.py --name Acceptance02 --widgets --extended --build --from-project projects\Acceptance01\Acceptance01.fsprj
+python tests\native_connection.py Connection03 projects\Acceptance02\Acceptance02.fsprj
+python tests\native_build_comparison.py BuildCompare04 projects\Acceptance02\Acceptance02.fsprj
 ```
 
 Каждое имя испытания должно быть новым. Сценарий создаёт отдельный проект
@@ -65,6 +72,13 @@ python tests\elhart_native_smoke.py --name Acceptance02 --widgets --extended --b
 `--extended` проверяет прозрачный PNG, нативное действие перехода,
 undo/redo, повторное изменение по имени и отказ от повторного создания.
 Для Elhart изображение импортируется через LoadFromFile, без исправления XML.
+
+native_connection проверяет смену двух копий проекта и восстановление исходной
+задачи после тайм-аута наблюдения без повторной записи. native_build_comparison
+сравнивает нативную сборку внутри редактора с изолированной: каждый путь должен
+завершиться успешно, ресурсы совпасть, данные и исходник сохраниться. Различие
+fshmi.bin фиксируется отдельно; успешное сравнение не означает эквивалентность
+этого бинарника. Промежуточный Subbin исключён из входов снимка.
 
 `--simulate` подтверждает запуск FCS/FSGUI и затем закрывает тестовую группу.
 Он не выполняет визуальную или интерактивную приёмку. Для неё нужен отдельный

@@ -124,6 +124,43 @@ def indicator_canvas(service,report):
     return definition
 
 
+def runtime_controls(service,report):
+    """Native controls expose local test values for actual simulator clicks."""
+    items={x['name']:x for x in complete(service.visible,'drawing_snapshot')['items']}
+    input_ref=items['main.input']['model']['$ref']
+    complete(service.visible,'set_member',ref=input_ref,member='NormalData.DataType',value='Int16')
+    complete(service.visible,'set_members',changes=[
+        dict(ref=input_ref,member='NormalData.ReadAddress.Raw.DataType',value='Int16'),
+        dict(ref=input_ref,member='NormalData.NumericLimit.MinLimit.Constant',value=-32768),
+        dict(ref=input_ref,member='NormalData.NumericLimit.MaxLimit.Constant',value=32767)])
+    address=complete(service.visible,'read_member',ref=input_ref,member='NormalData.ReadAddress')['value']['$ref']
+    report['paired_signed_input']=complete(service.visible,'drawing_configure_local_address',ref=address,address=100)
+    tool='Flexem.Studio.GraphicsDesigner.Tools.'
+    extra=[dict(name='main.state.label',tool=tool+'StaticTextTool',text='Тест состояния: 0 / 1 / 99',
+                text_style=dict(font_size=16,font_name='Arial'),x=650,y=290,width=310,height=35),
+           dict(name='main.state.input',tool=tool+'NumericCharTool',tool_properties=dict(OperationAttrib='NumericInput'),
+                x=650,y=330,width=220,height=65,local_addresses=[dict(member='NormalData.ReadAddress',address=102)])]
+    service._wait_job(service.canvas_create_many(extra))
+    state_input=next(x for x in complete(service.visible,'drawing_snapshot')['items'] if x['name']=='main.state.input')['model']['$ref']
+    complete(service.visible,'set_members',changes=[
+        dict(ref=state_input,member='NormalData.NumericLimit.UseLimit',value=True),
+        dict(ref=state_input,member='NormalData.NumericLimit.MinLimit.IsConstant',value=True),
+        dict(ref=state_input,member='NormalData.NumericLimit.MinLimit.Constant',value=0),
+        dict(ref=state_input,member='NormalData.NumericLimit.MaxLimit.IsConstant',value=True),
+        dict(ref=state_input,member='NormalData.NumericLimit.MaxLimit.Constant',value=65535)])
+    pages=complete(service.visible,'pages_list')['pages']
+    main=next(p for p in pages if p['id']==1);second=next(p for p in pages if p['name']=='Вторая страница')
+    complete(service.visible,'page_open',uuid=second['uuid'])
+    service._wait_job(service.canvas_create_many([
+        dict(name='second.title',tool=tool+'StaticTextTool',text='Проверка перехода и сохранения значений',text_style=dict(font_size=24,font_name='Arial'),x=40,y=30,width=900,height=60),
+        dict(name='second.back',tool=tool+'SwitchTool',x=40,y=130,width=220,height=75)]))
+    back=next(x for x in complete(service.visible,'drawing_snapshot')['items'] if x['name']=='second.back')
+    report['return_navigation']=complete(service.visible,'drawing_configure_navigation',ref=back['model']['$ref'],target_uuid=main['uuid'],text='Главная страница')
+    complete(service.visible,'page_open',uuid=main['uuid'])
+    report['runtime_test_values']=dict(signed=[0,-32768,32767],indicator=[0,1,99],button_bit=20)
+    return extra
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf8')
     parser = argparse.ArgumentParser()
@@ -135,6 +172,7 @@ def main():
     parser.add_argument('--from-project', type=Path)
     parser.add_argument('--extended',action='store_true')
     parser.add_argument('--indicators',action='store_true')
+    parser.add_argument('--runtime-controls',action='store_true')
     parser.add_argument('--build-outcome',choices=('success','failure','cancel'),default='success')
     args = parser.parse_args()
     if args.build_outcome!='success' and not args.build:
@@ -143,6 +181,7 @@ def main():
         parser.error('The intentional compiler failure requires --widgets')
     if args.extended and not args.widgets:parser.error('--extended requires --widgets')
     if args.indicators and not args.widgets:parser.error('--indicators requires --widgets')
+    if args.runtime_controls and not args.widgets:parser.error('--runtime-controls requires --widgets')
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
     editor = TestEditor()
@@ -253,6 +292,7 @@ def main():
                 report['widgets_created'] = service._wait_job(service.canvas_create_many(widgets), timeout=90)
             snapshot = complete(service.visible,'drawing_snapshot')
             report['layout_before_save'] = snapshot
+            original_names={x['name'] for x in snapshot['items']}
             button = next(x for x in snapshot['items'] if x['name']=='main.start')
             if cloned_entry is None:
                 report['button_action'] = complete(service.visible,'drawing_configure_bit_switch',
@@ -264,6 +304,7 @@ def main():
                 report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
             if args.extended:widgets.extend(extended_canvas(service,destination,report))
             if args.indicators:widgets.append(indicator_canvas(service,report))
+            if args.runtime_controls:widgets.extend(runtime_controls(service,report))
         report['saved'] = complete(service.visible, 'save_project')
         entry = report['saved']['project']
         report['closed'] = complete(service.visible, 'close_project')
@@ -271,7 +312,7 @@ def main():
         if args.widgets:
             snapshot = complete(service.visible,'drawing_snapshot')
             report['layout_after_reopen'] = snapshot
-            assert {x['name'] for x in snapshot['items']} == {x['name'] for x in widgets}
+            assert {x['name'] for x in snapshot['items']} == original_names | {x['name'] for x in widgets}
             if args.extended:
                 items={x['name']:x for x in snapshot['items']}
                 image=items['main.picture']['model']['$ref']
