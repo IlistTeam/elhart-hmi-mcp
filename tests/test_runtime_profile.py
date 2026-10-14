@@ -30,6 +30,9 @@ class RuntimeProfileTests(unittest.TestCase):
             self.assertEqual((models['F010']['width'], models['F010']['height']), (1024, 768))
             self.assertEqual(models['F010']['oem_overlay'], str(overlay))
             self.assertEqual(profile.templates, root/'Template/HMI/zh')
+            self.assertEqual(profile.resolve_model('ECP10'), 'F010')
+            with self.assertRaisesRegex(ValueError, 'missing or ambiguous'):
+                profile.resolve_model('F999')
             self.assertEqual(profile.describe('3.0.15569.0')['verification'], 'installed_metadata_only')
 
     def test_wrong_installation_and_unknown_version_rejected(self):

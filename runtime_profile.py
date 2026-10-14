@@ -77,6 +77,18 @@ class RuntimeProfile:
         path = self.bin.parent/f'Template/HMI/Custom/119/{identifier}.ptpl'
         return path if self.name == 'elhart' and path.is_file() else None
 
+    def resolve_model(self, name):
+        catalog = self.model_catalog()
+        if name in catalog:
+            return name
+        aliases = [key for key, info in catalog.items()
+                   if name in (info.get('display_name') or '').split('/')]
+        if len(aliases) == 1:
+            return aliases[0]
+        if self.name == 'elhart':
+            raise ValueError('Model is missing or ambiguous in the installed Elhart OEM catalog: '+name)
+        return name
+
     def describe(self, version=None):
         return dict(name=self.name, bin=str(self.bin), templates=str(self.templates),
                     oem=119 if self.name == 'elhart' else None, log_file=str(self.log_file),

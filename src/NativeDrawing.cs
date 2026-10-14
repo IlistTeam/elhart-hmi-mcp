@@ -154,6 +154,30 @@ namespace FStudioMcp {
    catch{if(group!=null)CallNative(group,"Abort");throw;}
    return Obj("model",DescribeOwned(model,scope),"action",DescribeOwned(action,scope),"function",mode,"trigger","KeyDown","local_device_id",Member(raw,"DeviceId"),"register",DescribeOwned(Member(raw,"RegisterId"),scope),"address",Member(raw,"MainAddress"),"action_count",((IEnumerable)actions).Cast<object>().Count(),"native_undo_transaction",group!=null,"persistence","save_project_to_persist","execution_mode",ExecutionMode);
   }
+  static object ConfigureBitIndicator(Dictionary<string,object>a,object view){
+   var model=Ref(a);if(model.GetType().FullName!="Flexem.Studio.Components.Parts.SwitchPart.SwitchInfo")throw new ArgumentException("Expected SwitchInfo");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))throw new ArgumentException("Indicator must belong to the active page or its draft");
+   var indicator=Member(model,"Indicator");if(Member(indicator,"Usage")!=null)throw new ArgumentException("Indicator is already configured; existing conditions were preserved");
+   double index=Convert.ToDouble(a["address"]);if(a["address"] is bool||index<0||index>UInt32.MaxValue||Math.Truncate(index)!=index)throw new ArgumentException("Invalid local bit address");
+   string off=S(a,"off_text"),on=S(a,"on_text");if(String.IsNullOrWhiteSpace(off)||String.IsNullOrWhiteSpace(on))throw new ArgumentException("Both state labels are required");
+   var statuses=((IEnumerable)Member(Member(model,"Tag"),"Statuses")).Cast<object>().ToArray();if(statuses.Length!=2)throw new NotSupportedException("Expected two native tag states");
+   var devices=Member(PageServices(),"DeviceService");var usageType=Native("Flexem.Studio.Hmi.Models.Components.Parts.Indicator.IndicatorUsage.IndicatorUsageData");
+   var constructor=usageType.GetConstructors().Single(c=>c.GetParameters().Length==1&&c.GetParameters()[0].ParameterType.FullName=="Flexem.Studio.Hmi.Device.IDeviceService");
+   var usage=constructor.Invoke(new[]{devices});NativeSet(usage,"DisplayType","RegisterMode");
+   var control=Member(usage,"RegisterControl");NativeSet(control,"ControlType","BitRegister");
+   var bit=Member(control,"Bit");var address=PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateBit",devices);
+   NativeSet(Member(address,"Raw"),"MainAddress",Convert.ToUInt32(index));NativeSet(bit,"Address",address);NativeSet(bit,"IsSameAsSwitchAddress",false);
+   var bits=((IEnumerable)Member(bit,"Statuses")).Cast<object>().ToArray();if(bits.Length!=2)throw new NotSupportedException("Expected two native bit states");
+   NativeSet(bits[0],"IsNegativeLogic",false);NativeSet(bits[1],"IsNegativeLogic",true);
+   var owner=OwningView(S(a,"ref"));object group=owner==null?null:BeginModelChange(owner,"MCP: bit indicator states");
+   try{
+    NativeSet(indicator,"Usage",usage);NativeSet(indicator,"UseIndicator",true);NativeSet(Member(model,"Tag"),"UsingType","Tag");
+    for(int i=0;i<2;i++)foreach(var language in (IEnumerable)Member(statuses[i],"Items"))NativeSet(language,"Text",i==0?off:on);
+    if(group!=null)CallNative(group,"Commit");
+   }catch{if(group!=null)CallNative(group,"Abort");throw;}
+   return Obj("model",DescribeOwned(model,scope),"address",index,"state_count",bits.Length,"negative_logic",bits.Select(x=>Member(x,"IsNegativeLogic")).ToArray(),"labels",new[]{off,on},"register",Describe(Member(Member(address,"Raw"),"RegisterId")),"native_undo_transaction",group!=null,"runtime","not_executed");
+  }
   static object ConfigureTrendSampling(Dictionary<string,object>a,object view){
    var model=Ref(a);if(model.GetType().GetProperty("SamplingChannel")==null)throw new ArgumentException("Expected a sampling-backed curve model");
    var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
@@ -214,6 +238,7 @@ namespace FStudioMcp {
    if(op=="drawing_show_canvas")return ShowCanvasWithoutActivation();
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
+   if(op=="drawing_configure_bit_indicator")return ConfigureBitIndicator(a,view);
    if(op=="drawing_configure_local_address")return ConfigureLocalAddress(a,view);
    if(op=="drawing_configure_trend")return ConfigureTrendSampling(a,view);
    if(op=="drawing_remove_graphic")return RemoveCanvasGraphic(a,view,page);

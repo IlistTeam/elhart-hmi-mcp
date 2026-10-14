@@ -11,7 +11,7 @@ import tempfile
 EXCLUDED_ROOTS=frozenset(('.mcp-backups','Bin','temp','Lucene'))
 
 
-def prune_recent_projects(snapshot_project=None):
+def prune_recent_projects(snapshot_project=None, recent_file=None):
     """Remove temp-snapshot entries from FStudio's recent-projects list.
 
     The isolated compiler opens each snapshot in FStudio, which records the
@@ -19,18 +19,26 @@ def prune_recent_projects(snapshot_project=None):
     entries make FStudio show a missing-project dialog on startup, so both
     the worker startup and the snapshot cleanup call this.
     """
-    import os,re
-    appdata=os.environ.get('APPDATA')
-    if not appdata:return 0
-    recent=Path(appdata)/'Flexem'/'FStudio3'/'RecentProjects.xml'
+    import html, re
+    # Remove only this worker's owned snapshot; never sweep another installation.
+    if snapshot_project is None or recent_file is None:return 0
+    recent=Path(recent_file)
     if not recent.is_file():return 0
     try:
         raw=recent.read_text(encoding='utf-8-sig')
-        pattern=re.compile(r'\s*<Project Value="[^"]*(?:fsmcp-[^"\/]*|Temp[\/][^"]*fsmcp[^"\/]*)[^"]*"\s*/>')
-        cleaned=pattern.sub('',raw)
+        pattern=re.compile(r'\s*<Project Value="([^"]*)"\s*/>')
+        owned=Path(snapshot_project).resolve()
+        count=0
+        def remove_owned(match):
+            nonlocal count
+            if Path(html.unescape(match.group(1))).resolve()==owned:
+                count+=1
+                return ''
+            return match.group(0)
+        cleaned=pattern.sub(remove_owned,raw)
         if cleaned!=raw:
             recent.write_text(cleaned,encoding='utf-8-sig')
-        return len(pattern.findall(raw))
+        return count
     except Exception:
         return 0
 
@@ -56,13 +64,14 @@ def input_manifest(directory):
 
 
 class BuildSnapshot:
-    def __init__(self, project, *, workspace, artifact_dir, temp_parent=None):
+    def __init__(self, project, *, workspace, artifact_dir, temp_parent=None, recent_file=None):
         source=Path(project).resolve(strict=True)
         workspace=Path(workspace).resolve(strict=True)
         if not source.is_relative_to(workspace) or source.suffix.lower()!='.fsprj':
             raise ValueError('Expected a workspace fsprj file')
         if not source.is_file():raise ValueError('Project is not a file')
         self.source=source
+        self.recent_file=recent_file
         self.artifact_dir=Path(artifact_dir).resolve()
         self.artifact_dir.mkdir(parents=True,exist_ok=True)
         self.owner=Path(tempfile.mkdtemp(prefix='fsmcp-',dir=temp_parent)).resolve()
@@ -123,4 +132,4 @@ class BuildSnapshot:
         if self.owner==self.source.parent or self.source.is_relative_to(self.owner):
             raise RuntimeError('Snapshot cleanup would include source project')
         shutil.rmtree(self.owner)
-        prune_recent_projects()
+        prune_recent_projects(self.project, self.recent_file)

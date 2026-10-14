@@ -186,6 +186,11 @@ TOOLS += [
          schema({'page_uuid': PAGE_UUID, 'widgets': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': CANVAS_WIDGET},
                  'presets': {'type': 'object', 'maxProperties': 20, 'additionalProperties': schema(CANVAS_PRESET_FIELDS)}}, ['widgets']), False),
 ]
+TOOLS.append(tool('fstudio_canvas_configure_bit_indicator',
+    'Initialize an unconfigured SwitchInfo indicator with two native local-bit states and labels. '
+    'Preserves existing configured indicators by refusing replacement. Save and compile to persist; no runtime or hardware I/O.',
+    schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295},
+            'off_text':KEY,'on_text':KEY}, ['ref','address','off_text','on_text']), False))
 BY_NAME = {t['name']: t for t in TOOLS}
 
 
@@ -305,8 +310,7 @@ class FStudio:
         return name
 
     def _template(self, model):
-        if self.profile.name == 'elhart' and model not in self.profile.model_catalog():
-            raise ValueError('Model is not in the installed Elhart OEM catalog')
+        model = self.profile.resolve_model(model)
         path = self.templates / (self.model_name(model) + '.tpl')
         if not path.is_file(): raise ValueError('Installed model template not found')
         return path
@@ -358,6 +362,7 @@ class FStudio:
         finally: marker.unlink(missing_ok=True)
 
     def create_project(self, name, model):
+        model = self.profile.resolve_model(model)
         dest = self.inside(self.file_name(name)); template = self._template(model)
         if dest.exists(): raise ValueError('Project destination already exists; choose another name')
         stage = self.inside('.create-' + uuid.uuid4().hex)
@@ -494,6 +499,7 @@ class FStudio:
     def visible_create_project(self, name, model):
         """校验目标后提交原生创建任务；路径超限时不写文件、不调用宿主。"""
         self.file_name(name)
+        model = self.profile.resolve_model(model)
         dest = self.inside(name)
         self.check_native_project_directory(dest)
         if dest.exists(): raise ValueError('Destination already exists')
@@ -767,6 +773,9 @@ class FStudio:
 
     def canvas_configure_bit_switch(self, **args):
         return self.visible.request('drawing_configure_bit_switch', **args)
+
+    def canvas_configure_bit_indicator(self, **args):
+        return self.visible.request('drawing_configure_bit_indicator', **args)
 
     def build_cancel(self, build_id):
         return self.builds.cancel(build_id)

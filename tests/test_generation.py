@@ -95,7 +95,7 @@ class GenerationTests(unittest.TestCase):
         with patch('server.sys.stdin', io.StringIO('\n'.join(map(json.dumps,messages)))), patch('server.sys.stdout',output):
             serve(service)
         replies = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(len(replies[1]['result']['tools']), 73)
+        self.assertEqual(len(replies[1]['result']['tools']), len(BY_NAME))
         self.assertFalse(replies[2]['result']['isError'])
         self.assertTrue(replies[3]['result']['isError'])
         service.visible.request.assert_called_once()

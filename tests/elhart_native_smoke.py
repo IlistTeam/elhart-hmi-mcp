@@ -32,6 +32,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', required=True)
     parser.add_argument('--bin', type=Path, default=DEFAULT_BIN)
+    parser.add_argument('--build', action='store_true')
+    parser.add_argument('--widgets', action='store_true')
     args = parser.parse_args()
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
@@ -74,10 +76,70 @@ def main():
         report['created'] = job['result']
         report['state'] = complete(service.visible, 'state')
         report['pages'] = complete(service.visible, 'pages_list')
+        if args.widgets:
+            tool = 'Flexem.Studio.GraphicsDesigner.Tools.'
+            def numeric(name, operation, address, x):
+                return dict(name=name, tool=tool+'NumericCharTool',
+                            tool_properties=dict(OperationAttrib=operation), x=x, y=200, width=170, height=60,
+                            properties=[dict(member='NormalData.DataType', value='UInt16'),
+                                        dict(member='NormalData.IntegerValue',value=5),
+                                        dict(member='NormalData.DecimalValue',value=0),
+                                        dict(member='NormalData.NumericLimit.UseLimit',value=True),
+                                        dict(member='NormalData.NumericLimit.MinLimit.IsConstant',value=True),
+                                        dict(member='NormalData.NumericLimit.MinLimit.Constant',value=0),
+                                        dict(member='NormalData.NumericLimit.MaxLimit.IsConstant',value=True),
+                                        dict(member='NormalData.NumericLimit.MaxLimit.Constant',value=1000)],
+                            local_addresses=[dict(member='NormalData.ReadAddress',address=address)])
+            widgets = [dict(name='main.title', tool=tool+'StaticTextTool', text='Проверка ELHART HMI MCP',
+                            text_style=dict(font_size=28,color='#FF143D59',font_name='Arial',bold=True),
+                            x=40,y=30,width=700,height=60),
+                       dict(name='main.note', tool=tool+'StaticTextTool',
+                            text='Тестовый экран ECP-10: значения и действия на внутренней памяти',
+                            text_style=dict(font_size=18,font_name='Arial'),x=40,y=110,width=900,height=50),
+                       numeric('main.value','NumericDisplay',100,40),
+                       numeric('main.input','NumericInput',101,300),
+                       dict(name='main.unit',tool=tool+'StaticTextTool',text='мбар',
+                            text_style=dict(font_size=22,font_name='Arial'),x=218,y=205,width=75,height=50),
+                       dict(name='main.circle',tool=tool+'EllipseTool',x=560,y=200,width=60,height=60),
+                       dict(name='main.start',tool=tool+'SwitchTool',x=40,y=330,width=200,height=75)]
+            report['widgets_created'] = service._wait_job(service.canvas_create_many(widgets), timeout=90)
+            snapshot = complete(service.visible,'drawing_snapshot')
+            report['layout_before_save'] = snapshot
+            button = next(x for x in snapshot['items'] if x['name']=='main.start')
+            report['button_action'] = complete(service.visible,'drawing_configure_bit_switch',
+                                               ref=button['model']['$ref'],action='Switch',address=20)
+            report['button_indicator'] = complete(service.visible,'drawing_configure_bit_indicator',
+                ref=button['model']['$ref'],address=20,off_text='Пуск',on_text='Работает')
+            report['button_properties'] = complete(service.visible,'inspect_object',ref=button['model']['$ref'])
+            report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
         report['saved'] = complete(service.visible, 'save_project')
         entry = report['saved']['project']
         report['closed'] = complete(service.visible, 'close_project')
         report['reopened'] = complete(service.visible, 'open_project', file=entry)
+        if args.widgets:
+            snapshot = complete(service.visible,'drawing_snapshot')
+            report['layout_after_reopen'] = snapshot
+            assert {x['name'] for x in snapshot['items']} == {x['name'] for x in widgets}
+            old_ref = button['model']['$ref']
+            try:
+                complete(service.visible, 'read_member',ref=old_ref,member='Comment')
+            except RuntimeError as error:
+                assert 'expired' in str(error)
+                report['old_handle_rejected'] = True
+            else:
+                raise AssertionError('Stale model reference survived reopening')
+        if args.build:
+            result = service.builds.start(Path(entry))
+            report['build'] = result
+            print(json.dumps(dict(build_id=result['build_id'],status=result['status'])), flush=True)
+            deadline = time.monotonic() + 180
+            while result['status'] not in ('completed','failed','cancelled','ui_required','cleanup_failed'):
+                if time.monotonic() > deadline:
+                    raise TimeoutError('Build pending; inspect build_id '+result['build_id'])
+                time.sleep(.5)
+                result = service.builds.status(result['build_id'])
+            report['build'] = result
+            assert result.get('compiler_success') and result.get('cleanup_complete'), result
         report['success'] = True
     except Exception as error:
         report['success'] = False
