@@ -60,7 +60,7 @@ class VisibleHost:
             try:
                 with open(path,'r+b',buffering=8192) as stream:
                     stream.write(json.dumps(dict(args,op=op),ensure_ascii=False,allow_nan=False).encode('utf8')+b'\n');stream.flush()
-                    raw = stream.readline(8*1024*1024)
+                    raw = stream.readline(16*1024*1024)
                     responses.put(json.loads(raw))
             except Exception as e: responses.put(e)
         threading.Thread(target=transfer,daemon=True).start()

@@ -52,6 +52,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-visible-host.p
 ```powershell
 python -m unittest discover -s tests
 python tests\elhart_native_smoke.py --name Acceptance01 --widgets --build
+python tests\elhart_native_smoke.py --name Acceptance02 --widgets --extended --build --from-project projects\Acceptance01\Acceptance01.fsprj
 ```
 
 Каждое имя испытания должно быть новым. Сценарий создаёт отдельный проект
@@ -60,6 +61,10 @@ python tests\elhart_native_smoke.py --name Acceptance01 --widgets --build
 При невозможности безопасного закрытия процесс оставляется для восстановления,
 а следующий тест отказывается запускать ещё один экземпляр.
 Отчёт хранится в artifacts/elhart-smoke/<имя>/report.json.
+
+`--extended` проверяет прозрачный PNG, нативное действие перехода,
+undo/redo, повторное изменение по имени и отказ от повторного создания.
+Для Elhart изображение импортируется через LoadFromFile, без исправления XML.
 
 `--simulate` подтверждает запуск FCS/FSGUI и затем закрывает тестовую группу.
 Он не выполняет визуальную или интерактивную приёмку. Для неё нужен отдельный

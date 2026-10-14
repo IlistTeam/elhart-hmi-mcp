@@ -121,6 +121,10 @@ public static class DrawingContractsHarness {
    Host=Assembly.LoadFrom(Path.GetFullPath(args[0])).GetType("FStudioMcp.VisibleHost",true);
    string root=Path.GetFullPath(args[1]).TrimEnd('\\')+"\\";
    Host.GetField("workspace",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,root);
+   var serializer=Invoke("Json");
+   var largePayload="{\"data\":\""+new String('A',12*1024*1024)+"\"}";
+   var decoded=(IDictionary)serializer.GetType().GetMethod("DeserializeObject").Invoke(serializer,new object[]{largePayload});
+   Check(((string)decoded["data"]).Length==12*1024*1024,"Pipe JSON must fit base64 of an allowed 8 MiB image plus metadata");
    // No dispatcher or native project exists in this harness. A status read
    // must complete directly even when a native UI launch cannot complete.
    var simulation=(Dictionary<string,object>)Invoke("Handle",D("op","simulation_state"));

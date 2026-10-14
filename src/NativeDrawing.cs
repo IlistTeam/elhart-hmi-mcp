@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -178,6 +179,51 @@ namespace FStudioMcp {
    }catch{if(group!=null)CallNative(group,"Abort");throw;}
    return Obj("model",DescribeOwned(model,scope),"address",index,"state_count",bits.Length,"negative_logic",bits.Select(x=>Member(x,"IsNegativeLogic")).ToArray(),"labels",new[]{off,on},"register",Describe(Member(Member(address,"Raw"),"RegisterId")),"native_undo_transaction",group!=null,"runtime","not_executed");
   }
+  static object ImportNativePicture(Dictionary<string,object>a,object view){
+   var model=Ref(a);if(model.GetType().FullName!="Flexem.Studio.Components.Graphicses.StaticPictureInfo")throw new ArgumentException("Expected StaticPictureInfo");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))throw new ArgumentException("Picture must belong to the active page or its draft");
+   string file=Path.GetFullPath(S(a,"file"));Within(file);
+   byte[] data=Convert.FromBase64String(S(a,"data"));if(data.Length==0||data.Length>8*1024*1024)throw new ArgumentException("Invalid picture byte length");
+   if(!File.Exists(file)||!File.ReadAllBytes(file).SequenceEqual(data))throw new ArgumentException("Imported file bytes do not match the request");
+   var normal=Member(model,"NormalInfo");if(!String.IsNullOrEmpty(Convert.ToString(Member(normal,"ImageImportPath")))||Convert.ToString(Member(normal,"PictureOrigin"))!="None")throw new ArgumentException("Picture already has a source; preserve it");
+   var load=normal.GetType().GetMethod("LoadFromFile",new[]{typeof(string),typeof(byte[])});
+   if(load==null)throw new NotSupportedException("Native picture LoadFromFile contract is missing");
+   var owner=OwningView(S(a,"ref"));object group=owner==null?null:BeginModelChange(owner,"MCP: native picture import");
+   try{load.Invoke(normal,new object[]{file,data});if(Convert.ToString(Member(normal,"PictureOrigin"))!="File")throw new InvalidOperationException("Native import did not set PictureOrigin=File");if(group!=null)CallNative(group,"Commit");}
+   catch{if(group!=null)CallNative(group,"Abort");throw;}
+   return Obj("picture_origin",Convert.ToString(Member(normal,"PictureOrigin")),"file",Member(normal,"ImageImportPath"),"bytes",data.Length,"native_undo_transaction",group!=null,"xml_repair_required",false,"runtime","not_executed");
+  }
+  static object ConfigureNavigation(Dictionary<string,object>a,object view){
+   var model=Ref(a);if(model.GetType().FullName!="Flexem.Studio.Components.Parts.SwitchPart.SwitchInfo")throw new ArgumentException("Expected SwitchInfo");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))throw new ArgumentException("Button must belong to the active page or its draft");
+   Guid uuid;if(!Guid.TryParse(S(a,"target_uuid"),out uuid))throw new ArgumentException("Invalid target page UUID");
+   var target=CallNative(Member(PageWindowService(),"WindowManager"),"GetWindow",uuid);if(target==null)throw new ArgumentException("Target page does not exist");RequireBasicPage(Member(target,"Settings"));
+   var settings=Member(model,"SwitchSettings");var actions=Member(settings,"ActionList");if(((IEnumerable)actions).Cast<object>().Any())throw new ArgumentException("Existing actions were preserved; configure an empty button");
+   string text=S(a,"text");if(String.IsNullOrWhiteSpace(text))throw new ArgumentException("Navigation label is required");
+   var dto=Activator.CreateInstance(Native("Flexem.Studio.Components.Parts.SwitchNew.WindowOperSwitchActionDto"));
+   NativeSet(dto,"ExecutionCondition","Action");NativeSet(dto,"Action","KeyDown");NativeSet(dto,"Function","Window");NativeSet(dto,"FuncType","Switch");NativeSet(dto,"Window",uuid);NativeSet(dto,"IsAutoPopupPasswordWindow",false);
+   var action=Activator.CreateInstance(Native("Flexem.Studio.Hmi.Models.Components.Parts.SwitchNew.WindowOperSwitchActions.WindowOperSwitchActionData"),new[]{dto});
+   var tag=Member(model,"Tag");var statuses=((IEnumerable)Member(tag,"Statuses")).Cast<object>().ToArray();
+   var owner=OwningView(S(a,"ref"));object group=owner==null?null:BeginModelChange(owner,"MCP: page navigation");
+   try{NativeSet(settings,"UseSwitch",true);CallNative(actions,"Add",action);NativeSet(tag,"UsingType","Tag");foreach(var state in statuses)foreach(var language in (IEnumerable)Member(state,"Items"))NativeSet(language,"Text",text);if(group!=null)CallNative(group,"Commit");}
+   catch{if(group!=null)CallNative(group,"Abort");throw;}
+   return Obj("target_uuid",uuid.ToString(),"action",DescribeOwned(action,scope),"function","Window","mode","Switch","trigger","KeyDown","text",text,"native_undo_transaction",group!=null,"runtime","not_executed");
+  }
+  static object CanvasHistory(Dictionary<string,object>a,object view){
+   string op=S(a,"op");var session=Member(view,"UndoRedoSession");
+   var undo=((IEnumerable)CallNative(session,"GetUndoTextList")).Cast<object>().Select(Convert.ToString).ToArray();
+   var redo=((IEnumerable)CallNative(session,"GetRedoTextList")).Cast<object>().Select(Convert.ToString).ToArray();
+   if(op!="drawing_history"){
+    if(drawingDrafts.Count!=0)throw new InvalidOperationException("Commit or discard drawing drafts before undo/redo");
+    if(op=="drawing_undo"&&undo.Length==0||op=="drawing_redo"&&redo.Length==0)throw new InvalidOperationException("No native history entry is available");
+    CallNative(session,op=="drawing_undo"?"Undo":"Redo");
+    undo=((IEnumerable)CallNative(session,"GetUndoTextList")).Cast<object>().Select(Convert.ToString).ToArray();
+    redo=((IEnumerable)CallNative(session,"GetRedoTextList")).Cast<object>().Select(Convert.ToString).ToArray();
+   }
+   return Obj("undo",undo,"redo",redo,"page_uuid",PageUuid(Member(view,"Model")).ToString(),"dirty",Member(view,"IsDirty"),"execution_mode",ExecutionMode);
+  }
   static object ConfigureTrendSampling(Dictionary<string,object>a,object view){
    var model=Ref(a);if(model.GetType().GetProperty("SamplingChannel")==null)throw new ArgumentException("Expected a sampling-backed curve model");
    var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
@@ -239,6 +285,9 @@ namespace FStudioMcp {
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
    if(op=="drawing_configure_bit_indicator")return ConfigureBitIndicator(a,view);
+   if(op=="drawing_configure_navigation")return ConfigureNavigation(a,view);
+   if(op=="drawing_import_image")return ImportNativePicture(a,view);
+   if(op=="drawing_history"||op=="drawing_undo"||op=="drawing_redo")return CanvasHistory(a,view);
    if(op=="drawing_configure_local_address")return ConfigureLocalAddress(a,view);
    if(op=="drawing_configure_trend")return ConfigureTrendSampling(a,view);
    if(op=="drawing_remove_graphic")return RemoveCanvasGraphic(a,view,page);

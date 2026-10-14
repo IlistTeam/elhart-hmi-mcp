@@ -122,7 +122,7 @@ TOOLS += [
     tool('fstudio_canvas_state','Read the current native drawing canvas and prepared-draft state through the background host.',schema()),
     tool('fstudio_canvas_show','Show the existing workspace canvas window without activating it, opening settings, or generating mouse input. Restores a minimized canvas so native drawing updates can be observed. Does not bring an already visible window above other applications. Returns a host job and observed visibility/focus state.',schema(),False),
     tool('fstudio_address_configure_local','Configure a direct AddressInfo or AddressData from the active canvas or its draft using the current project native local-device bit/word register factory. Preserves the address data type; changes device, register and main index in one native undo transaction on an attached page. Rejects label/index/station-reference/offset/tag-reference addresses. Returns the actual device/register/index; does not read or write hardware.',schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295}},['ref','address']),False),
-    tool('fstudio_import_image','Import a local PNG/JPG/GIF/BMP file into a StaticPictureInfo on the active canvas or its draft by setting its NormalInfo.ImageData bytes (base64 over the local pipe) and ImageImportPath. The file is validated (existence, size limit 8 MiB, image magic), copied into the project HMI/Lib/ImportImage directory and rejected when the control already imports a file; the write uses the same native undo transaction path as model_set. The native serializer drops PictureOrigin for fresh imports, so compilation keeps reporting "请从文件或者图库导入图片。"; set repair_origin=true to also save, close the project, insert <PictureOrigin>File</PictureOrigin> after the ImageImportPath element in the affected page XML, and reopen the project in one call. Save afterwards to persist. No file dialog is opened; runtime rendering is not verified.',schema({'ref':STR,'file':STR,'repair_origin':{'type':'boolean','default':False}},['ref','file']),False),
+    tool('fstudio_import_image','Import a local PNG/JPG/GIF/BMP, up to 8 MiB, into an empty StaticPicture on the active page or its draft. Validate and copy the source into HMI/Lib/ImportImage. Elhart uses native LoadFromFile in an undo transaction, sets PictureOrigin=File and needs no XML repair. Legacy FStudio retains optional repair_origin=true save/close/XML/reopen behavior. Existing source pictures and conflicting resources are preserved by refusal. Save, reopen and compile; runtime rendering requires separate acceptance.',schema({'ref':STR,'file':STR,'repair_origin':{'type':'boolean','default':False}},['ref','file']),False),
     tool('fstudio_add_language','Add a project UI language through the native LanguageConfigurationService.AddItem with a standard .NET culture name (e.g. ja-JP), reusing the font of the first existing language configuration. Rejects duplicate cultures. Save the project to persist; the language appears in LanguageConfigInfo.cfg with its LCID and survives close/reopen. No settings dialog is opened; translation workflows are not part of this call.',schema({'culture':STR},['culture']),False),
     tool('fstudio_add_user_level','Add a project user level through the native UserLevelInfos.AddUserLevelInfo factory (level 1..255) with optional password and description; duplicate levels are rejected. The native configuration is saved to HMI/System/UserLevelConfigInfo.cfg immediately and verified by count; survives close/reopen. No settings dialog is opened; control authorization and runtime login behavior are not part of this call.',schema({'level':{'type':'integer','minimum':1,'maximum':255},'password':{'type':'string','maxLength':64},'description':{'type':'string','maxLength':128}},['level']),False),
     tool('fstudio_add_plan_task','Add a plan/schedule task through the native PlanTaskInfos collection (AddNew + Add) with a description, optional enable flag and start days, then save the native plan-task configuration file immediately. Returns the task count after insertion. Duplicate descriptions are not checked; each call adds one task. No settings dialog is opened; start/end time windows and execute actions are not configured by this call.',schema({'description':STR,'enable':{'type':'boolean'},'days':{'type':'integer','minimum':0,'maximum':255},'start_address':{'type':'integer','minimum':0,'maximum':4294967295},'enable_address':{'type':'integer','minimum':0,'maximum':4294967295}},['description']),False),
@@ -196,8 +196,14 @@ TOOLS.append(tool('fstudio_simulation_start',
     'Requires clean views, forces offline mode, may compile and show native simulator UI. '
     'Returns launch evidence only; no hardware I/O or visual/interaction acceptance is claimed.', schema(), False))
 TOOLS.append(tool('fstudio_simulation_state',
-    'Read native offline simulator flags and newly observed FCS process candidates. '
+    'Read cached offline simulator flags with observation time and newly observed FCS/FSGUI process candidates without waiting for UI. '
     'Candidates do not prove ownership or correct rendering; no simulator is stopped.', schema()))
+TOOLS.append(tool('fstudio_canvas_configure_navigation',
+    'Initialize an empty SwitchInfo with a native KeyDown transition to an existing Basic page UUID and a label in every configured language. Existing actions are preserved by refusal. Save, reopen and compile; actual runtime transition remains a separate test.',
+    schema({'ref':STR,'target_uuid':PAGE_UUID,'text':KEY},['ref','target_uuid','text']),False))
+TOOLS.append(tool('fstudio_canvas_history','Read undo/redo entries of the active native canvas.',schema()))
+TOOLS.append(tool('fstudio_canvas_undo','Undo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
+TOOLS.append(tool('fstudio_canvas_redo','Redo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
 BY_NAME = {t['name']: t for t in TOOLS}
 
 
@@ -697,21 +703,24 @@ class FStudio:
         if not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff')
                 or data.startswith(b'GIF87a') or data.startswith(b'GIF89a') or data.startswith(b'BM')):
             raise ValueError('unsupported image format; expected PNG, JPG, GIF or BMP')
-        state = self.visible.read('state')
+        state = self._wait_job(self.visible.read('state'))
         project_file = state.get('project') if isinstance(state, dict) else None
         if not project_file:
             raise RuntimeError('No active project; open the target project before importing an image')
         project_dir = Path(project_file).resolve().parent
         import_dir = project_dir / 'HMI' / 'Lib' / 'ImportImage'
         target = import_dir / path.name
-        normal = self.visible.read('read_member', ref=ref, member='NormalInfo')
+        normal = self._wait_job(self.visible.read('read_member', ref=ref, member='NormalInfo'))
         normal_ref = normal.get('value', {}).get('$ref') if isinstance(normal, dict) else None
         if not normal_ref:
             raise ValueError('ref does not expose a NormalInfo object; expected a StaticPictureInfo handle')
-        existing = self.visible.read('read_member', ref=normal_ref, member='ImageImportPath')
+        existing = self._wait_job(self.visible.read('read_member', ref=normal_ref, member='ImageImportPath'))
         existing_path = existing.get('value') if isinstance(existing, dict) else None
         if existing_path:
             raise ValueError('this picture already imports a file; import into an empty StaticPicture control')
+        if self.profile.name=='elhart':
+            origin=self._wait_job(self.visible.read('read_member',ref=normal_ref,member='PictureOrigin'))
+            if origin.get('value')!='None':raise ValueError('Picture already has a source; preserve it')
         # 先校验控件，再创建文件；已有同名资源只能复用相同内容，不能覆盖其他控件的图片。
         if target.resolve() != path:
             if target.exists():
@@ -722,6 +731,13 @@ class FStudio:
                 # 排他创建防止校验之后其他请求写入同名文件。
                 with target.open('xb') as stream:
                     stream.write(data)
+        if self.profile.name=='elhart':
+            job=self.visible.request('drawing_import_image',ref=ref,file=str(target),
+                data=base64.b64encode(data).decode('ascii'))
+            native=self._wait_job(job)
+            return dict(imported_file=str(target),bytes=len(data),job=job,native=native,
+                repair_origin={'required':False,'method':'native_LoadFromFile'},
+                note='Native import sets PictureOrigin. Save/reopen and compile before acceptance; runtime rendering remains unverified.')
         job = self.visible.request('set_members', changes=[
             {'ref': normal_ref, 'member': 'ImageData', 'value': base64.b64encode(data).decode('ascii')},
             {'ref': normal_ref, 'member': 'ImageImportPath', 'value': str(target)},
@@ -733,6 +749,7 @@ class FStudio:
                               '<PictureOrigin>File</PictureOrigin> after the ImageImportPath element. For automatic '
                               'repair, pass repair_origin=true on the initial import; populated controls reject reimport.')
             return result
+        self._wait_job(job)
         # 自动修补：保存 -> 关闭 -> 修补页面 XML -> 重开
         save_job = self.visible.request('save_project')
         self._wait_job(save_job)
@@ -793,6 +810,13 @@ class FStudio:
 
     def canvas_configure_bit_indicator(self, **args):
         return self.visible.request('drawing_configure_bit_indicator', **args)
+
+    def canvas_configure_navigation(self, **args):
+        return self.visible.request('drawing_configure_navigation', **args)
+
+    def canvas_history(self):return self.visible.read('drawing_history')
+    def canvas_undo(self):return self.visible.request('drawing_undo')
+    def canvas_redo(self):return self.visible.request('drawing_redo')
 
     def build_cancel(self, build_id):
         return self.builds.cancel(build_id)

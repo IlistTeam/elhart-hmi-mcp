@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 import shutil
 import time
+import struct
+import zlib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import FStudio, DEFAULT_BIN, HERE
 from visible_host import VisibleHost
@@ -29,6 +31,75 @@ def complete(host, operation, **arguments):
     return result
 
 
+def transparency_fixture(path):
+    """Deterministic test data, not a screenshot or interface render."""
+    def chunk(kind,data):
+        return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
+    pixels=[]
+    for y in range(64):
+        row=bytearray([0])
+        for x in range(64):
+            radius=(x-31.5)**2+(y-31.5)**2
+            row.extend((18,148,108,255 if radius<26**2 else 96 if radius<29**2 else 0))
+        pixels.append(bytes(row))
+    path.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!2I5B',64,64,8,6,0,0,0))+
+                    chunk(b'IDAT',zlib.compress(b''.join(pixels)))+chunk(b'IEND',b''))
+
+
+def extended_canvas(service,destination,report):
+    tool='Flexem.Studio.GraphicsDesigner.Tools.'
+    definitions=[dict(name='main.picture',tool=tool+'StaticPictureTool',x=660,y=200,width=64,height=64),
+                 dict(name='main.next',tool=tool+'SwitchTool',x=300,y=330,width=220,height=75)]
+    before=complete(service.visible,'drawing_snapshot')
+    existing={}
+    for item in before['items']:
+        if item['name'] in existing:raise AssertionError('Ambiguous stable component name')
+        existing[item['name']]=item
+    missing=[item for item in definitions if item['name'] not in existing]
+    history=complete(service.visible,'drawing_history')
+    if missing:
+        report['extended_created']=service._wait_job(service.canvas_create_many(missing))
+        after=complete(service.visible,'drawing_snapshot')
+        after_history=complete(service.visible,'drawing_history')
+        assert len(after_history['undo'])==len(history['undo'])+1
+        complete(service.visible,'drawing_undo')
+        assert {x['uuid'] for x in complete(service.visible,'drawing_snapshot')['items']}=={x['uuid'] for x in before['items']}
+        complete(service.visible,'drawing_redo')
+        assert {x['uuid'] for x in complete(service.visible,'drawing_snapshot')['items']}=={x['uuid'] for x in after['items']}
+        report['batch_undo_redo_preserved_identity']=True
+    items={x['name']:x for x in complete(service.visible,'drawing_snapshot')['items']}
+    picture=items['main.picture'];fixture=destination/'alpha-circle.png';transparency_fixture(fixture)
+    report['native_image_import']=service.import_image(picture['model']['$ref'],str(fixture))
+    report['alpha_settings']=complete(service.visible,'set_members',changes=[
+        dict(ref=picture['model']['$ref'],member='NormalInfo.AlphaColor.IsUsePngAlphaChannel',value=True),
+        dict(ref=picture['model']['$ref'],member='NormalInfo.SizeZoom.IsFixLatitudeScale',value=True),
+        dict(ref=picture['model']['$ref'],member='NormalInfo.SizeZoom.IsUseOriginalSize',value=True)])
+    pages=complete(service.visible,'pages_list')['pages']
+    target=next(p for p in pages if p['name']=='Вторая страница')
+    report['navigation']=complete(service.visible,'drawing_configure_navigation',
+        ref=items['main.next']['model']['$ref'],target_uuid=target['uuid'],text='Вторая страница')
+    # Modify the same stable identity twice; creation is deliberately not upsert.
+    unit=items['main.unit'];original=unit['bounds'];unit_ref=unit['model']['$ref']
+    for _ in range(2):
+        complete(service.visible,'set_members',changes=[dict(ref=unit_ref,member='Position.X',value=226),dict(ref=unit_ref,member='Position.Y',value=205)])
+    changed=complete(service.visible,'drawing_snapshot',names=['main.unit'])['items'][0]
+    assert changed['uuid']==unit['uuid'] and changed['bounds']['x']==226
+    complete(service.visible,'drawing_undo')
+    # The second identical edit may have no history entry; return to the old bounds.
+    restored=complete(service.visible,'drawing_snapshot',names=['main.unit'])['items'][0]
+    if restored['bounds']['x']!=original['x']:
+        complete(service.visible,'drawing_undo');restored=complete(service.visible,'drawing_snapshot',names=['main.unit'])['items'][0]
+    assert restored['bounds']==original
+    complete(service.visible,'drawing_redo')
+    assert complete(service.visible,'drawing_snapshot',names=['main.unit'])['items'][0]['bounds']['x']==226
+    try:service._wait_job(service.canvas_create_many(definitions))
+    except RuntimeError:report['duplicate_creation_rejected']=True
+    else:raise AssertionError('create_many silently overwrote stable components')
+    report['stable_name_update_preserved_uuid']=True
+    report['extended_final_snapshot']=complete(service.visible,'drawing_snapshot')
+    return definitions
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf8')
     parser = argparse.ArgumentParser()
@@ -38,12 +109,14 @@ def main():
     parser.add_argument('--widgets', action='store_true')
     parser.add_argument('--simulate', action='store_true')
     parser.add_argument('--from-project', type=Path)
+    parser.add_argument('--extended',action='store_true')
     parser.add_argument('--build-outcome',choices=('success','failure','cancel'),default='success')
     args = parser.parse_args()
     if args.build_outcome!='success' and not args.build:
         parser.error('--build-outcome requires --build')
     if args.build_outcome=='failure' and not args.widgets:
         parser.error('The intentional compiler failure requires --widgets')
+    if args.extended and not args.widgets:parser.error('--extended requires --widgets')
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
     editor = TestEditor()
@@ -163,6 +236,7 @@ def main():
             report['button_properties'] = complete(service.visible,'inspect_object',ref=button['model']['$ref'])
             if cloned_entry is None:
                 report['second_page'] = complete(service.visible,'page_create',name='Вторая страница')
+            if args.extended:widgets.extend(extended_canvas(service,destination,report))
         report['saved'] = complete(service.visible, 'save_project')
         entry = report['saved']['project']
         report['closed'] = complete(service.visible, 'close_project')
@@ -171,6 +245,15 @@ def main():
             snapshot = complete(service.visible,'drawing_snapshot')
             report['layout_after_reopen'] = snapshot
             assert {x['name'] for x in snapshot['items']} == {x['name'] for x in widgets}
+            if args.extended:
+                items={x['name']:x for x in snapshot['items']}
+                image=items['main.picture']['model']['$ref']
+                origin=complete(service.visible,'read_member',ref=image,member='NormalInfo.PictureOrigin')['value']
+                assert origin=='File',origin
+                assert complete(service.visible,'read_member',ref=image,member='NormalInfo.AlphaColor.IsUsePngAlphaChannel')['value'] is True
+                action=complete(service.visible,'read_member',ref=items['main.next']['model']['$ref'],member='SwitchSettings.ActionList',index=0)['value']['$ref']
+                assert complete(service.visible,'read_member',ref=action,member='Window')['value']==report['navigation']['target_uuid']
+                report['image_and_navigation_persisted']=True
             if args.build_outcome=='failure':
                 numeric_input=next(x for x in snapshot['items'] if x['name']=='main.input')
                 report['intentional_missing_device']=complete(service.visible,'set_member',

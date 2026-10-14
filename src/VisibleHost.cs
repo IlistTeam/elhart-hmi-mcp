@@ -30,7 +30,7 @@ namespace FStudioMcp {
   static string workspace, stateDir, pipeName, nativeLogFile, runtimeProfile, testSessionToken;
   static Dictionary<string,object> Obj(params object[] values) {var d=new Dictionary<string,object>();for(int i=0;i<values.Length;i+=2)d[(string)values[i]]=values[i+1];return d;}
   static string S(Dictionary<string,object> a,string key) {return Convert.ToString(a[key]);}
-  static JavaScriptSerializer Json() {return new JavaScriptSerializer{MaxJsonLength=8000000};}
+  static JavaScriptSerializer Json() {return new JavaScriptSerializer{MaxJsonLength=16*1024*1024};}
   internal static void Start() {
    dispatcher=Dispatcher.CurrentDispatcher;
    var location=Path.GetDirectoryName(typeof(VisibleHost).Assembly.Location);
@@ -47,7 +47,7 @@ namespace FStudioMcp {
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
+  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="drawing_history"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
   /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
   static Type Native(string name) {
    Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
