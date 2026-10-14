@@ -106,6 +106,13 @@ class GenerationTests(unittest.TestCase):
 
 
 class JobConsumptionTests(unittest.TestCase):
+    def test_simulator_snapshot_consumes_direct_reply(self):
+        client=VisibleHost('unused')
+        snapshot={'status':'native_call_running','online':False,'project':'test.fsprj'}
+        with patch.object(client,'request',return_value=snapshot) as request:
+            self.assertEqual(client.read('simulation_state'),snapshot)
+        request.assert_called_once_with('simulation_state')
+
     def test_inline_read_needs_no_job_poll(self):
         client = VisibleHost('unused')
         client.request = Mock(return_value={'job_id': 'one', 'status': 'completed', 'result': {'value': 42}})

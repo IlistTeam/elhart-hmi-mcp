@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import FStudio, DEFAULT_BIN, HERE
 from visible_host import VisibleHost
 from build_snapshot import input_manifest
+from native_session import TestEditor, refuse_live_tests
 
 
 def complete(host, operation, **arguments):
@@ -37,11 +38,26 @@ def main():
     parser.add_argument('--widgets', action='store_true')
     parser.add_argument('--simulate', action='store_true')
     parser.add_argument('--from-project', type=Path)
+    parser.add_argument('--build-outcome',choices=('success','failure','cancel'),default='success')
     args = parser.parse_args()
+    if args.build_outcome!='success' and not args.build:
+        parser.error('--build-outcome requires --build')
+    if args.build_outcome=='failure' and not args.widgets:
+        parser.error('The intentional compiler failure requires --widgets')
     report = dict(started_utc=datetime.now(timezone.utc).isoformat(), scope='native_editor_smoke')
     destination = HERE/'artifacts/elhart-smoke'/args.name
+    editor = TestEditor()
+    try:
+        refuse_live_tests(destination.parent)
+    except BaseException:
+        editor.cleanup(None, [])
+        raise
+    if destination.exists():
+        editor.cleanup(None, [])
+        raise ValueError('Choose a fresh test name; do not reuse an uncertain previous run')
     destination.mkdir(parents=True, exist_ok=True)
     service = FStudio(HERE/'projects', args.bin, 'elhart')
+    owned_projects = [service.workspace/args.name/(args.name+'.fsprj')]
     try:
         # Each smoke run gets its own plugin and endpoint. Never restart a user's editor.
         addin = destination/'visible-addin'
@@ -49,7 +65,8 @@ def main():
         shutil.copy2(HERE/'artifacts/FStudioMcp.Visible.dll', addin/'FStudioMcp.Visible.dll')
         shutil.copy2(HERE/'artifacts/visible-addin/FStudioMcp.addin', addin/'FStudioMcp.addin')
         settings = dict(workspace=str(service.workspace), state_directory=str(destination/'visible-host'),
-                        bin=str(service.bin), profile='elhart', log_file=str(service.profile.log_file))
+                        bin=str(service.bin), profile='elhart', log_file=str(service.profile.log_file),
+                        test_session_token=editor.token)
         (addin/'host-settings.json').write_text(json.dumps(settings), encoding='utf8')
         service.visible = VisibleHost(destination/'visible-host/endpoint.json')
         report['bridge'] = service.call('fstudio_health', {})
@@ -72,7 +89,18 @@ def main():
             entry=next(target.glob('*.fsprj'))
             cloned_entry=target/(args.name+'.fsprj');entry.rename(cloned_entry)
             report['created']=dict(project=str(cloned_entry),copied_saved_native_project=True,source_unchanged=True)
-        report['launch'] = service.visible_start(project=cloned_entry)
+        initial_entry=cloned_entry
+        if initial_entry is None:
+            # An explicit startup file prevents vendor autoload of the last
+            # project (which may already be open in another editor).
+            seed=service.create_project(args.name+'Seed','F010')
+            initial_entry=Path(seed['entry'])
+            owned_projects.append(initial_entry)
+            report['startup_seed']=seed
+        report['launch'] = service.visible_start(project=initial_entry)
+        if service.visible.started_process is None:
+            raise RuntimeError('Smoke test must own a freshly launched editor')
+        editor.own(service.visible.started_process)
         deadline = time.monotonic() + 60
         while not service.visible.endpoint.is_file():
             if time.monotonic() > deadline:
@@ -143,6 +171,12 @@ def main():
             snapshot = complete(service.visible,'drawing_snapshot')
             report['layout_after_reopen'] = snapshot
             assert {x['name'] for x in snapshot['items']} == {x['name'] for x in widgets}
+            if args.build_outcome=='failure':
+                numeric_input=next(x for x in snapshot['items'] if x['name']=='main.input')
+                report['intentional_missing_device']=complete(service.visible,'set_member',
+                    ref=numeric_input['model']['$ref'],member='NormalData.ReadAddress.Raw.DeviceId',
+                    value='00000000-0000-0000-0000-000000000001')
+                report['saved_missing_device']=complete(service.visible,'save_project')
             old_ref = button['model']['$ref']
             try:
                 complete(service.visible, 'read_member',ref=old_ref,member='Comment')
@@ -156,26 +190,72 @@ def main():
             report['build'] = result
             print(json.dumps(dict(build_id=result['build_id'],status=result['status'])), flush=True)
             deadline = time.monotonic() + 180
+            cancellation_sent=False
             while result['status'] not in ('completed','failed','cancelled','ui_required','cleanup_failed'):
                 if time.monotonic() > deadline:
                     raise TimeoutError('Build pending; inspect build_id '+result['build_id'])
                 time.sleep(.5)
                 result = service.builds.status(result['build_id'])
+                if args.build_outcome=='cancel' and not cancellation_sent and result['status']=='compiling' and result.get('native_started_utc'):
+                    report['cancel_request']=service.builds.cancel(result['build_id'])
+                    cancellation_sent=True
             report['build'] = result
-            assert result.get('compiler_success') and result.get('cleanup_complete'), result
+            summary={key:result.get(key) for key in ('build_id','status','compiler_success','cleanup_complete','source_unchanged','exception')}
+            assert result.get('cleanup_complete') and result.get('source_unchanged'),summary
+            if args.build_outcome=='success':
+                assert result.get('compiler_success') and result['status']=='completed',summary
+                outputs=result['outputs'];assert outputs['files']['fshmi.bin']['size']>0
+                for relative,fingerprint in outputs['files'].items():
+                    artifact=Path(outputs['directory'])/relative
+                    assert artifact.stat().st_size==fingerprint['size']
+                    assert hashlib.sha256(artifact.read_bytes()).hexdigest()==fingerprint['sha256']
+                assert result['native_result']['artifact_verification']=='snapshots_compared'
+                report['build_outputs_verified']=len(outputs['files'])
+            elif args.build_outcome=='failure':
+                assert result.get('compiler_success') is False and result['status']=='failed',summary
+            else:
+                assert cancellation_sent and result['status']=='cancelled',summary
+            report['expected_build_outcome']=args.build_outcome
         if args.simulate:
-            report['simulator_launch'] = complete(service.visible, 'simulation_start')
-            report['simulator_state'] = complete(service.visible, 'simulation_state')
+            launch=service.visible.request('simulation_start')
+            report['simulator_launch']=launch
+            deadline=time.monotonic()+60
+            while True:
+                state=service.visible.read('simulation_state')
+                report['simulator_state']=state
+                if state.get('launch_error'):
+                    raise RuntimeError(state['launch_error'])
+                if any(p['name']=='FSGUI' for p in state.get('new_process_candidates',[])):
+                    report['simulator_verification']='process_launch_only; visual_and_interaction_acceptance_pending'
+                    break
+                if 'job_id' in launch:
+                    launch=service.visible.request('job',job_id=launch['job_id'])
+                    report['simulator_launch']=launch
+                    if launch['status']=='failed':
+                        raise RuntimeError(launch['error'])
+                if time.monotonic()>=deadline:
+                    raise TimeoutError('Simulator observation pending; original launch job retained in report')
+                time.sleep(.25)
         report['success'] = True
     except Exception as error:
         report['success'] = False
         report['error'] = str(error)
         raise
     finally:
+        try:
+            report['editor_cleanup'] = editor.cleanup(service.visible, owned_projects)
+            if report['editor_cleanup']['status'] == 'editor_exited':
+                report['success'] = False
+        except Exception as error:
+            report['editor_cleanup'] = dict(status='failed',error=str(error))
+            report['success'] = False
         service.native.close()
         (destination/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf8')
         print(json.dumps(dict(success=report.get('success'), error=report.get('error'),
-                              report=str(destination/'report.json'), project=report.get('saved')), ensure_ascii=False))
+                              report=str(destination/'report.json'), project=report.get('saved'),
+                              cleanup=report.get('editor_cleanup')), ensure_ascii=False))
+    if not report.get('success'):
+        raise RuntimeError('Native smoke or editor cleanup failed; inspect the saved report')
 
 
 if __name__ == '__main__':

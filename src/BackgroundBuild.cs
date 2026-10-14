@@ -369,7 +369,7 @@ namespace FStudioMcp {
     if(run.Finalized)return;
     // Diagnostic collection failures do not replace the native task/result or its
     // outcome. Keep global service diagnostics separate from per-build callbacks.
-    run.State=run.UiRequests.Count>0?"ui_required":cancelled?"cancelled":nativeError!=null?"failed":"completed";
+    run.State=run.UiRequests.Count>0?"ui_required":cancelled?"cancelled":nativeError!=null||run.NativeResult==false?"failed":"completed";
     run.CompletedUtc=DateTime.UtcNow.ToString("o");run.Finalized=true;if(activeBuild==run)activeBuild=null;
    }
    run.Cancellation.Dispose();

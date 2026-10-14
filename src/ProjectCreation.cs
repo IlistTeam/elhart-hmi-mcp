@@ -37,6 +37,7 @@ namespace FStudioMcp {
   }
   /// <summary>在工作区创建原生工程并打开；错误通过任务返回，已创建的失败目录保留供检查。</summary>
   static object CreateProject(Dictionary<string,object>a){
+   if(CurrentProject()!=null){RequireProject();if(!(bool)ProjectService("CanCloseCurrentProject"))throw new InvalidOperationException("Save the current project before creating another one");}
    string name=S(a,"name");
    if(name!=Path.GetFileName(name)||name.IndexOfAny(Path.GetInvalidFileNameChars())>=0||name=="."||name=="..")throw new ArgumentException("Invalid project name");
    string destination=Path.GetFullPath(Path.Combine(workspace,name));Within(destination);

@@ -11,6 +11,7 @@ import subprocess
 class VisibleHost:
     def __init__(self, endpoint):
         self.endpoint = Path(endpoint)
+        self.started_process = None
 
     def start(self, bin_dir, project=None):
         if self.endpoint.is_file():
@@ -33,6 +34,7 @@ class VisibleHost:
         arguments=[str(exe),'-addindir:'+str(addin.resolve())]
         if project is not None:arguments.append(str(Path(project).resolve(strict=True)))
         process=subprocess.Popen(arguments,cwd=str(bin_dir),startupinfo=startup,creationflags=subprocess.CREATE_NO_WINDOW)
+        self.started_process = process
         return {'status':'starting','pid':process.pid,'visible':True,'instruction':'Poll visible_state; do not start another instance while this process is alive'}
 
     def request(self, op, **args):
@@ -71,6 +73,8 @@ class VisibleHost:
     def read(self, op, **args):
         """优先消费首次终态；原任务轮询以 5～50 ms 退避，观察期限不丢弃刚收到的结果。"""
         job = self.request(op,**args)
+        if 'job_id' not in job:
+            return job
         deadline = time.monotonic()+5
         delay = .005
         while True:

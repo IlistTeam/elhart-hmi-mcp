@@ -63,6 +63,8 @@ def run_job(request_file):
             # A queued native operation is retained and polled by the session.
             persist(status=compiler.phase,native_build_id=compiler.build_id,
                     cancel_requested=compiler.cancel_requested,
+                    native_started_utc=(compiler.native_status or {}).get('started_utc'),
+                    native_task_status=(compiler.native_status or {}).get('native_task_status'),
                     observation_error=compiler.observation_error)
             time.sleep(.25)
         terminal=result['status']

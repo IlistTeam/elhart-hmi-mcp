@@ -30,6 +30,8 @@ class DesktopProcess:
         self.user=ctypes.WinDLL('user32',use_last_error=True)
         self.desktop=None
         self.process=None
+        self.job=None
+        self.job_assigned=False
         self.pid=None
         self.name='FStudioMcpBuild_'+uuid.uuid4().hex
         self.kernel.CloseHandle.argtypes=[W.HANDLE]
@@ -37,6 +39,14 @@ class DesktopProcess:
         self.kernel.WaitForSingleObject.restype=W.DWORD
         self.kernel.GetExitCodeProcess.argtypes=[W.HANDLE,ctypes.POINTER(W.DWORD)]
         self.kernel.TerminateProcess.argtypes=[W.HANDLE,W.UINT]
+        self.kernel.CreateJobObjectW.argtypes=[ctypes.c_void_p,W.LPCWSTR]
+        self.kernel.CreateJobObjectW.restype=W.HANDLE
+        self.kernel.AssignProcessToJobObject.argtypes=[W.HANDLE,W.HANDLE]
+        self.kernel.AssignProcessToJobObject.restype=W.BOOL
+        self.kernel.TerminateJobObject.argtypes=[W.HANDLE,W.UINT]
+        self.kernel.TerminateJobObject.restype=W.BOOL
+        self.kernel.ResumeThread.argtypes=[W.HANDLE]
+        self.kernel.ResumeThread.restype=W.DWORD
         self.user.CloseDesktop.argtypes=[W.HANDLE]
         self.user.CreateDesktopW.argtypes=[W.LPCWSTR,W.LPCWSTR,ctypes.c_void_p,W.DWORD,W.DWORD,ctypes.c_void_p]
         self.user.CreateDesktopW.restype=W.HANDLE
@@ -56,11 +66,21 @@ class DesktopProcess:
         info=ProcessInfo()
         command=ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe),*map(str,arguments)]))
         try:
-            if not self.kernel.CreateProcessW(str(exe),command,None,None,False,0x08000000,None,str(directory),ctypes.byref(startup),ctypes.byref(info)):
+            self.job=self.kernel.CreateJobObjectW(None,None)
+            if not self.job:raise ctypes.WinError(ctypes.get_last_error())
+            # Assign before native startup so compiler subprocesses cannot
+            # escape the job between process creation and ownership setup.
+            if not self.kernel.CreateProcessW(str(exe),command,None,None,False,0x08000004,None,str(directory),ctypes.byref(startup),ctypes.byref(info)):
                 raise ctypes.WinError(ctypes.get_last_error())
             self.process=info.hProcess
             self.pid=info.dwProcessId
-            self.kernel.CloseHandle(info.hThread)
+            try:
+                if not self.kernel.AssignProcessToJobObject(self.job,self.process):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                self.job_assigned=True
+                if self.kernel.ResumeThread(info.hThread)==0xFFFFFFFF:
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:self.kernel.CloseHandle(info.hThread)
         except BaseException:
             self.close()
             raise
@@ -111,12 +131,21 @@ class DesktopProcess:
         return result
 
     def close(self):
+        if self.job_assigned:
+            if not self.kernel.TerminateJobObject(self.job,1):raise ctypes.WinError(ctypes.get_last_error())
         if self.process:
             if self.poll() is None:
-                if not self.kernel.TerminateProcess(self.process,1):raise ctypes.WinError(ctypes.get_last_error())
+                # TerminateJobObject has already requested termination. A
+                # second TerminateProcess during that transition can return
+                # ERROR_ACCESS_DENIED even for our retained owned handle.
+                if not self.job_assigned and not self.kernel.TerminateProcess(self.process,1):raise ctypes.WinError(ctypes.get_last_error())
                 if self.kernel.WaitForSingleObject(self.process,5000)!=0:raise RuntimeError('Owned worker did not terminate')
             self.kernel.CloseHandle(self.process)
             self.process=None
+        if self.job:
+            self.kernel.CloseHandle(self.job)
+            self.job=None
+            self.job_assigned=False
         if self.desktop:
             if not self.user.CloseDesktop(self.desktop):raise ctypes.WinError(ctypes.get_last_error())
             self.desktop=None

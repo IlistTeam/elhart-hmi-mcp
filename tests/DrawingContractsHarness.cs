@@ -121,6 +121,34 @@ public static class DrawingContractsHarness {
    Host=Assembly.LoadFrom(Path.GetFullPath(args[0])).GetType("FStudioMcp.VisibleHost",true);
    string root=Path.GetFullPath(args[1]).TrimEnd('\\')+"\\";
    Host.GetField("workspace",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,root);
+   // No dispatcher or native project exists in this harness. A status read
+   // must complete directly even when a native UI launch cannot complete.
+   var simulation=(Dictionary<string,object>)Invoke("Handle",D("op","simulation_state"));
+   Check(Convert.ToString(simulation["status"])=="not_started"&&!simulation.ContainsKey("job_id"),"Simulation status must not queue an unbounded UI job");
+   Host.GetField("simulationPhase",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,"native_call_running");
+   simulation=(Dictionary<string,object>)Invoke("Handle",D("op","simulation_state"));
+   Check(Convert.ToString(simulation["status"])=="native_call_running"&&simulation["native_is_simulating"]==null,"A pending native call must be observable without native getters");
+   Check(!(bool)simulation["online"]&&!(bool)simulation["process_ownership_verified"],"Status must preserve offline mode and avoid claiming process ownership");
+   Host.GetField("simulationPhase",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,"not_started");
+   var buildRunType=Host.GetNestedType("BackgroundBuildRun",BindingFlags.NonPublic);
+   foreach(bool compilerResult in new[]{true,false}){
+    var run=Activator.CreateInstance(buildRunType,true);
+    buildRunType.GetField("NativeResult",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(run,compilerResult);
+    Invoke("FinalizeBackgroundBuild",run,null,false);
+    Check(Convert.ToString(buildRunType.GetField("State",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(run))==(compilerResult?"completed":"failed"),"Task completion must preserve actual compiler success/failure");
+   }
+   var pendingBuild=Activator.CreateInstance(buildRunType,true);
+   buildRunType.GetField("Id",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(pendingBuild,"contract-running");
+   buildRunType.GetField("Project",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(pendingBuild,Path.Combine(root,"contract.fsprj"));
+   buildRunType.GetField("State",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(pendingBuild,"running");
+   ((IDictionary)Host.GetField("buildRuns",BindingFlags.Static|BindingFlags.NonPublic).GetValue(null)).Add("contract-running",pendingBuild);
+   Host.GetField("activeBuild",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,pendingBuild);
+   var buildStatus=(Dictionary<string,object>)Invoke("Handle",D("op","build_status","build_id","contract-running"));
+   Check(Convert.ToString(buildStatus["status"])=="running"&&!buildStatus.ContainsKey("job_id"),"Build status must not wait for a busy UI dispatcher");
+   var cancelled=(Dictionary<string,object>)Invoke("Handle",D("op","build_cancel","build_id","contract-running"));
+   Check((bool)cancelled["cancel_requested"],"Cancellation must be acknowledged while the dispatcher is unavailable");
+   Invoke("FinalizeBackgroundBuild",pendingBuild,null,true);
+   Check(Convert.ToString(buildRunType.GetField("State",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(pendingBuild))=="cancelled","Cancellation must retain its terminal state");
    TestComponentIds();
    TestTextLanguages();
    var page=new ContractPage{UniqueId=Guid.NewGuid(),Name="测试页",Type="Basic",Id=1,Width=800,Height=480,ConfigFileName=Path.Combine(root,"contract-page.xml"),Graphicses=new List<ContractGraphic>()};
