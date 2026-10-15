@@ -8,12 +8,10 @@ Python 3.11+, .NET Framework 4.x, x86. Установленные библиот
 
 Получите исходники форка, выберите короткий путь к рабочей папке проектов.
 Пример ниже предполагает, что текущий каталог — корень репозитория.
-Проверенная адаптация опубликована в ветке `feature/elhart-adaptation`
-([PR №1](https://github.com/IlistTeam/elhart-hmi-mcp/pull/1)); до включения
-изменений в main используйте эту ветку:
+Устанавливайте адаптацию из основной ветки `main`:
 
 ```powershell
-git clone --branch feature/elhart-adaptation https://github.com/IlistTeam/elhart-hmi-mcp.git
+git clone --branch main https://github.com/IlistTeam/elhart-hmi-mcp.git
 cd elhart-hmi-mcp
 ```
 
