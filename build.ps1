@@ -1,4 +1,4 @@
-param([string]$FStudioBin = 'C:\Program Files (x86)\Flexem\FStudio 3.x\Bin')
+param([string]$FStudioBin = 'C:\Program Files (x86)\KIP\ELHART HMI Soft 3.x\Bin')
 $ErrorActionPreference = 'Stop'
 $taskCompiler = 'C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $taskCompiler)) { throw "Compiler missing: $taskCompiler" }

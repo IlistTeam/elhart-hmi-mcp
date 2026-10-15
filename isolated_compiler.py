@@ -15,16 +15,21 @@ class IsolatedCompiler:
         self.pending={}
         self.build_id=None
         self.cancel_requested=False
+        self.cancel_deadline=None
         self.cancel_sent=False
         self.cancel_error=None
         self.observation_error=None
         self.phase='starting'
+        self.native_status=None
         addin=snapshot.artifact_dir/'addin'
         addin.mkdir()
         for name in ('FStudioMcp.Visible.dll','FStudioMcp.addin'):
             shutil.copy2(Path(addin_source)/name,addin/name)
         state=snapshot.artifact_dir/'host'
-        (addin/'host-settings.json').write_text(json.dumps(dict(workspace=str(snapshot.owner),state_directory=str(state))),encoding='utf8')
+        from runtime_profile import RuntimeProfile
+        profile = RuntimeProfile.discover(bin_dir)
+        (addin/'host-settings.json').write_text(json.dumps(dict(workspace=str(snapshot.owner),state_directory=str(state),
+            bin=str(profile.bin),profile=profile.name,log_file=str(profile.log_file))),encoding='utf8')
         self.host=VisibleHost(state/'endpoint.json')
         self.process=DesktopProcess(Path(bin_dir)/'FStudio.exe',
             ['-addindir:'+str(addin),str(snapshot.project)],cwd=bin_dir)
@@ -52,7 +57,9 @@ class IsolatedCompiler:
         if value['status']=='completed':return value['result']
         return None
 
-    def request_cancel(self):self.cancel_requested=True
+    def request_cancel(self):
+        if not self.cancel_requested:self.cancel_deadline=time.monotonic()+3
+        self.cancel_requested=True
 
     def tick(self):
         code=self.process.poll()
@@ -79,9 +86,21 @@ class IsolatedCompiler:
         result=self.operation('status','build_status',build_id=self.build_id)
         if result is None:return None
         self.pending.pop('status',None)
+        self.native_status=result
         if result['status'] not in ('completed','failed','cancelled','ui_required'):
-            if self.cancel_error is not None:raise RuntimeError(self.cancel_error)
-            if self.cancel_requested and not self.cancel_sent:
+            if self.cancel_requested and self.cancel_sent and not result.get('native_task_completed') and time.monotonic()>=self.cancel_deadline:
+                # Native cancellation is best effort in the OEM compiler.
+                # Only an explicit cancellation triggers this path; an
+                # observation timeout never kills or restarts a worker.
+                self.close()
+                cancelled=dict(status='cancelled',compiler_success=None,
+                    cancellation_mode='owned_isolated_worker_terminated',
+                    native_status_at_cancel=result)
+                self.snapshot.write_record('native-result.json',cancelled)
+                self.phase='finished'
+                return cancelled
+            if self.cancel_error is not None and not result.get('native_task_completed'):raise RuntimeError(self.cancel_error)
+            if self.cancel_requested and not self.cancel_sent and not result.get('native_task_completed'):
                 try:
                     cancelled=self.operation('cancel','build_cancel',build_id=self.build_id)
                     if cancelled is None:return None

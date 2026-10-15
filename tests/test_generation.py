@@ -95,7 +95,7 @@ class GenerationTests(unittest.TestCase):
         with patch('server.sys.stdin', io.StringIO('\n'.join(map(json.dumps,messages)))), patch('server.sys.stdout',output):
             serve(service)
         replies = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(len(replies[1]['result']['tools']), 73)
+        self.assertEqual(len(replies[1]['result']['tools']), len(BY_NAME))
         self.assertFalse(replies[2]['result']['isError'])
         self.assertTrue(replies[3]['result']['isError'])
         service.visible.request.assert_called_once()
@@ -106,6 +106,13 @@ class GenerationTests(unittest.TestCase):
 
 
 class JobConsumptionTests(unittest.TestCase):
+    def test_simulator_snapshot_consumes_direct_reply(self):
+        client=VisibleHost('unused')
+        snapshot={'status':'native_call_running','online':False,'project':'test.fsprj'}
+        with patch.object(client,'request',return_value=snapshot) as request:
+            self.assertEqual(client.read('simulation_state'),snapshot)
+        request.assert_called_once_with('simulation_state')
+
     def test_inline_read_needs_no_job_poll(self):
         client = VisibleHost('unused')
         client.request = Mock(return_value={'job_id': 'one', 'status': 'completed', 'result': {'value': 42}})

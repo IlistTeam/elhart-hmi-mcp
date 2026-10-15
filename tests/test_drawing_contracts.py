@@ -22,7 +22,7 @@ class DrawingContractsTests(unittest.TestCase):
         result = subprocess.run(command, cwd=root, capture_output=True, timeout=60)
         output = (result.stdout+result.stderr).decode('utf8', errors='replace')
         self.assertEqual(result.returncode, 0, output)
-        self.assertIn('Drawing contract checks passed: 55', output)
+        self.assertIn('Drawing contract checks passed: 67', output)
 
 
 if __name__ == '__main__':

@@ -27,23 +27,27 @@ namespace FStudioMcp {
   static Dictionary<string,Type> commands;
   // 仅缓存已经加载的类型元数据；查找失败不缓存，允许 FStudio 后续加载插件。
   static readonly ConcurrentDictionary<string,Type> nativeTypes=new ConcurrentDictionary<string,Type>(StringComparer.Ordinal);
-  static string workspace, stateDir, pipeName;
+  static string workspace, stateDir, pipeName, nativeLogFile, runtimeProfile, testSessionToken;
   static Dictionary<string,object> Obj(params object[] values) {var d=new Dictionary<string,object>();for(int i=0;i<values.Length;i+=2)d[(string)values[i]]=values[i+1];return d;}
   static string S(Dictionary<string,object> a,string key) {return Convert.ToString(a[key]);}
-  static JavaScriptSerializer Json() {return new JavaScriptSerializer{MaxJsonLength=8000000};}
+  static JavaScriptSerializer Json() {return new JavaScriptSerializer{MaxJsonLength=16*1024*1024};}
   internal static void Start() {
    dispatcher=Dispatcher.CurrentDispatcher;
    var location=Path.GetDirectoryName(typeof(VisibleHost).Assembly.Location);
    var config=Json().Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(location,"host-settings.json")));
    workspace=Path.GetFullPath(S(config,"workspace")).TrimEnd('\\')+"\\";
    stateDir=Path.GetFullPath(S(config,"state_directory"));Directory.CreateDirectory(stateDir);
+   runtimeProfile=config.ContainsKey("profile")?S(config,"profile"):"auto";
+   testSessionToken=config.ContainsKey("test_session_token")?S(config,"test_session_token"):null;
+   nativeLogFile=config.ContainsKey("log_file")?S(config,"log_file"):Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"Flexem","FStudio3","Logs","Log.txt");
+   if(config.ContainsKey("bin")&&!String.Equals(Path.GetFullPath(S(config,"bin")).TrimEnd('\\'),Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Host installation does not match configured Bin directory");
    pipeName="fstudio-mcp-"+Process.GetCurrentProcess().Id;
    Log("宿主接口已启动。后台执行，仅原生画布显示绘图变化。");
-   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.4.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
+   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.5.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
+  static bool IsReadOnly(string op) {return op=="contracts"||op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="drawing_history"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="simulation_state";}
   /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
   static Type Native(string name) {
    Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
@@ -76,11 +80,35 @@ namespace FStudioMcp {
   }
   static object OnUi(Dictionary<string,object> a) {
    string op=S(a,"op");
+   if(op=="contracts")return ProbeNativeContracts();
    lock(buildGate)if(activeBuild!=null&&!activeBuild.Finalized&&!IsReadOnly(op)&&op!="build_cancel")throw new InvalidOperationException("A background build owns the project; wait for its build_id before changing or switching the project");
+   if(op=="test_session_delayed_set") {
+    if(String.IsNullOrEmpty(testSessionToken)||S(a,"token")!=testSessionToken||Convert.ToInt32(a["pid"])!=Process.GetCurrentProcess().Id)throw new InvalidOperationException("Delay probe requires the owning test session");
+    RequireProject();if(!String.Equals(ProjectFile(),S(a,"project"),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Test project changed before the delay probe");
+    Thread.Sleep(6000);
+    return OnUi(new Dictionary<string,object>{{"op","set_member"},{"ref",a["ref"]},{"member","Position.X"},{"value",a["value"]}});
+   }
+   if(op=="test_session_shutdown") {
+    if(String.IsNullOrEmpty(testSessionToken)||!a.ContainsKey("token")||S(a,"token")!=testSessionToken||Convert.ToInt32(a["pid"])!=Process.GetCurrentProcess().Id)
+     throw new InvalidOperationException("Shutdown requires the owning test session token and process id");
+    string file=ProjectFile();
+    if(file!=null) {
+     RequireProject();
+     string[] allowed=((System.Collections.IEnumerable)a["projects"]).Cast<object>().Select(x=>Path.GetFullPath(Convert.ToString(x))).ToArray();
+     if(!allowed.Any(x=>String.Equals(x,file,StringComparison.OrdinalIgnoreCase)))throw new InvalidOperationException("Test host contains a different project; leave it open");
+     ProjectService("SaveCurrentProject");
+     OnUi(new Dictionary<string,object>{{"op","close_project"}});
+    }
+    if(ProjectFile()!=null||DirtyViewCount()!=0)throw new InvalidOperationException("Test host still contains an open project or unsaved views; leave it open");
+    // Give the pipe client time to receive the terminal job before exiting WPF.
+    new Thread(()=>{Thread.Sleep(500);dispatcher.BeginInvoke(new Action(()=>System.Windows.Application.Current.Shutdown()));}){IsBackground=true}.Start();
+    return Obj("shutdown_scheduled",true,"pid",Process.GetCurrentProcess().Id,"project",null,"dirty_views",0,"saved_project",file);
+   }
    if(op.StartsWith("build_"))return BackgroundBuildOperation(a);
+   if(op=="simulation_start")return SimulationOperation(a);
    if(op=="sampling_add")return AddLocalSampling(a);
    if(op=="pages_list"||op.StartsWith("page_"))return NativePageOperation(a);
-   if(op=="state")return LiveState();
+   if(op=="state") {if(nativeContracts==null)ProbeNativeContracts();return LiveState();}
    if(op=="output")return Output();
    if(op.StartsWith("drawing_"))return DrawingOperation(a);
    if(op=="create_project")return CreateProject(a);
@@ -115,7 +143,11 @@ namespace FStudioMcp {
   }
   static object Handle(Dictionary<string,object> a) {
    var op=S(a,"op");
-   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.4.0","features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
+   if(op=="simulation_state")return SimulationState();
+   // Snapshots and token cancellation use only locked build state. Native
+   // compilation can occupy the UI thread before BuildAsync returns its Task.
+   if(op=="build_status"||op=="build_cancel")return BackgroundBuildOperation(a);
+   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"native_contracts",nativeContracts,"workspace",workspace,"version","0.5.0","runtime_profile",runtimeProfile,"native_log_file",nativeLogFile,"application",Process.GetCurrentProcess().MainModule.FileName,"dto_version",Native("Flexem.Studio.HMI.Window.HMIWindowInfoDto").Assembly.GetName().Version.ToString(),"features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
    if(op=="job") {lock(gate){Dictionary<string,object> j;if(!jobs.TryGetValue(S(a,"job_id"),out j))throw new ArgumentException("Unknown job");return new Dictionary<string,object>(j);}}
    var timer=Stopwatch.StartNew();
    var id=Guid.NewGuid().ToString("N");var job=Obj("job_id",id,"operation",op,"status","queued");lock(gate)jobs[id]=job;

@@ -237,7 +237,11 @@ namespace FStudioMcp {
    foreach(var entry in BatchArray(widget.Input,"properties",60,false)){
     var change=(Dictionary<string,object>)entry;object target;var property=ResolvePropertyTarget(draft.Model,S(change,"member"),out target);
     RequireBackgroundModelTarget(target);
-    if(!Scalar(property.PropertyType))throw new ArgumentException("Batch properties cannot replace native child objects: "+S(change,"member"));
+    // Elhart numeric limits store boxed scalar constants as System.Object.
+    // Never replace an existing child model through an object-typed property.
+    var previous=property.GetValue(target,null);
+    bool boxedScalar=property.PropertyType==typeof(object)&&(previous==null||Scalar(previous.GetType()))&&(change["value"]==null||Scalar(change["value"].GetType()));
+    if(!Scalar(property.PropertyType)&&!boxedScalar)throw new ArgumentException("Batch properties cannot replace native child objects: "+S(change,"member"));
     property.SetValue(target,ConvertArg(change["value"],property.PropertyType),null);
    }
    foreach(var entry in BatchArray(widget.Input,"local_addresses",8,false)){

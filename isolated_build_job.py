@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from build_snapshot import BuildSnapshot, prune_recent_projects
 from isolated_compiler import IsolatedCompiler
+from runtime_profile import RuntimeProfile
 
 
 def publish_status(directory,state):
@@ -49,7 +50,9 @@ def run_job(request_file):
         if (directory/'cancel').exists():
             terminal='cancelled'
             return
-        snapshot=BuildSnapshot(request['project'],workspace=request['workspace'],artifact_dir=directory)
+        profile=RuntimeProfile.discover(request['bin'])
+        snapshot=BuildSnapshot(request['project'],workspace=request['workspace'],artifact_dir=directory,
+                               recent_file=profile.log_file.parent.parent/'RecentProjects.xml')
         compiler=IsolatedCompiler(snapshot,request['addin'],request['bin'])
         persist(status='starting',worker_pid=compiler.process.pid,desktop=compiler.process.name)
         while True:
@@ -60,6 +63,8 @@ def run_job(request_file):
             # A queued native operation is retained and polled by the session.
             persist(status=compiler.phase,native_build_id=compiler.build_id,
                     cancel_requested=compiler.cancel_requested,
+                    native_started_utc=(compiler.native_status or {}).get('started_utc'),
+                    native_task_status=(compiler.native_status or {}).get('native_task_status'),
                     observation_error=compiler.observation_error)
             time.sleep(.25)
         terminal=result['status']
@@ -83,8 +88,6 @@ def run_job(request_file):
         persist(status=terminal if not cleanup_errors else 'cleanup_failed',
                 cleanup_complete=not cleanup_errors,cleanup_errors=cleanup_errors)
 
-
-prune_recent_projects()
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()

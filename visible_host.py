@@ -11,8 +11,9 @@ import subprocess
 class VisibleHost:
     def __init__(self, endpoint):
         self.endpoint = Path(endpoint)
+        self.started_process = None
 
-    def start(self, bin_dir):
+    def start(self, bin_dir, project=None):
         if self.endpoint.is_file():
             endpoint=json.loads(self.endpoint.read_text(encoding='utf-8-sig'))
             try:return self.request('health')
@@ -30,7 +31,10 @@ class VisibleHost:
         startup=subprocess.STARTUPINFO()
         startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow=4  # SW_SHOWNOACTIVATE: leave the user's current application focused.
-        process=subprocess.Popen([str(exe),'-addindir:'+str(addin.resolve())],cwd=str(bin_dir),startupinfo=startup,creationflags=subprocess.CREATE_NO_WINDOW)
+        arguments=[str(exe),'-addindir:'+str(addin.resolve())]
+        if project is not None:arguments.append(str(Path(project).resolve(strict=True)))
+        process=subprocess.Popen(arguments,cwd=str(bin_dir),startupinfo=startup,creationflags=subprocess.CREATE_NO_WINDOW)
+        self.started_process = process
         return {'status':'starting','pid':process.pid,'visible':True,'instruction':'Poll visible_state; do not start another instance while this process is alive'}
 
     def request(self, op, **args):
@@ -56,7 +60,7 @@ class VisibleHost:
             try:
                 with open(path,'r+b',buffering=8192) as stream:
                     stream.write(json.dumps(dict(args,op=op),ensure_ascii=False,allow_nan=False).encode('utf8')+b'\n');stream.flush()
-                    raw = stream.readline(8*1024*1024)
+                    raw = stream.readline(16*1024*1024)
                     responses.put(json.loads(raw))
             except Exception as e: responses.put(e)
         threading.Thread(target=transfer,daemon=True).start()
@@ -69,6 +73,8 @@ class VisibleHost:
     def read(self, op, **args):
         """优先消费首次终态；原任务轮询以 5～50 ms 退避，观察期限不丢弃刚收到的结果。"""
         job = self.request(op,**args)
+        if 'job_id' not in job:
+            return job
         deadline = time.monotonic()+5
         delay = .005
         while True:

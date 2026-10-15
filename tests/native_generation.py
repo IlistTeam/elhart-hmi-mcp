@@ -64,6 +64,9 @@ def compile_host(mode, directory, baseline_ref='3a03219'):
             raise ValueError('Baseline installer has no host source list')
     else:
         names.append('BatchDrawing.cs')
+        names.append('Simulation.cs')
+        names.append('NativeIndicators.cs')
+        names.append('NativeContracts.cs')
     for name in names:
         target = sources / name
         if mode == 'baseline':

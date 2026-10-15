@@ -90,6 +90,15 @@ namespace FStudioMcp {
 
   // BuildAsync resolves a second compiler through the container. Isolate that
   // compiler too; replacing only the outer operation's output misses its UI.
+  static ConstructorInfo NativeCompilerConstructor(Type type) {
+   if(type.Assembly.GetName().Name!="Flexem.Studio.Build"||type.IsAbstract||type.IsInterface)return null;
+   string[] expected={"Flexem.Studio.Build.IBuildMessageService","Flexem.Services.IStringParser","Flexem.Services.IFileSystem","Flexem.Infrastructure.IDependencyResolver","Flexem.Studio.Workbench.IErrorPad","Flexem.Services.ILoggingService","Flexem.Studio.Hmi.Device.Configuration.IDeviceConfigurationService","Flexem.Studio.Services.IAnalyticsMonitor"};
+   var constructors=type.GetConstructors().Where(c=>c.GetParameters().Select(p=>p.ParameterType.FullName).SequenceEqual(expected)).ToArray();
+   if(constructors.Length==0)return null;
+   var methods=type.GetMethods(BindingFlags.Public|BindingFlags.Instance|BindingFlags.DeclaredOnly).Where(m=>m.ReturnType==typeof(Task<bool>)&&m.GetParameters().Length==3&&m.GetParameters()[0].ParameterType.FullName=="Flexem.FileName"&&m.GetParameters()[1].ParameterType.FullName=="Flexem.Studio.Asynchronous.IProgressMonitor"&&m.GetParameters()[2].ParameterType.IsGenericType&&m.GetParameters()[2].ParameterType.GetGenericTypeDefinition()==typeof(Action<>)&&m.GetParameters()[2].ParameterType.GetGenericArguments()[0].FullName=="Flexem.Studio.Asynchronous.Error").ToArray();
+   if(constructors.Length!=1||methods.Length!=1)throw new NotSupportedException("Native compiler contract is ambiguous or changed: "+type.FullName);
+   return constructors[0];
+  }
   sealed class BackgroundBuildResolver : RealProxy {
    readonly BackgroundBuildRun run;readonly object original;
    internal BackgroundBuildResolver(Type type,BackgroundBuildRun owner):base(type){run=owner;original=Resolve(type.FullName);}
@@ -109,8 +118,8 @@ namespace FStudioMcp {
      var method=(MethodInfo)call.MethodBase;
      var requested=method.IsGenericMethod?method.GetGenericArguments()[0]:call.Args.OfType<Type>().FirstOrDefault();
      object value;
-     if(call.MethodName=="Resolve"&&requested!=null&&requested.FullName=="HB52bCSB8nBAlI1TVs.o9MkFLvKmwij5tJtId"&&call.ArgCount==0){
-      var constructor=requested.GetConstructors().Single(c=>c.GetParameters().Length==8);
+     var constructor=call.MethodName=="Resolve"&&requested!=null&&call.ArgCount==0?NativeCompilerConstructor(requested):null;
+     if(constructor!=null){
       value=constructor.Invoke(constructor.GetParameters().Select(p=>Dependency(p.ParameterType)).ToArray());
      }else if(call.MethodName=="Resolve"&&requested!=null&&call.ArgCount==0&&new[]{"Flexem.Studio.Workbench.IErrorPad","Flexem.Studio.Build.IBuildMessageService"}.Contains(requested.FullName))value=Dependency(requested);
      else value=method.Invoke(original,call.Args);
@@ -249,7 +258,7 @@ namespace FStudioMcp {
    ThreadPool.QueueUserWorkItem(delegate {
     try{
      var before=FingerprintBuildOutputs(run.OutputDirectory);
-     run.LogCapture=new BuildLogCapture(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"Flexem","FStudio3","Logs","Log.txt"));
+     run.LogCapture=new BuildLogCapture(nativeLogFile);
      lock(buildGate){run.Before=before;run.State="queued";}
      dispatcher.BeginInvoke(new Action(()=>InvokeBackgroundBuild(run)),DispatcherPriority.Background);
     }catch(Exception e){FinishBackgroundBuild(run,null,e,false);}
@@ -360,7 +369,7 @@ namespace FStudioMcp {
     if(run.Finalized)return;
     // Diagnostic collection failures do not replace the native task/result or its
     // outcome. Keep global service diagnostics separate from per-build callbacks.
-    run.State=run.UiRequests.Count>0?"ui_required":cancelled?"cancelled":nativeError!=null?"failed":"completed";
+    run.State=run.UiRequests.Count>0?"ui_required":cancelled?"cancelled":nativeError!=null||run.NativeResult==false?"failed":"completed";
     run.CompletedUtc=DateTime.UtcNow.ToString("o");run.Finalized=true;if(activeBuild==run)activeBuild=null;
    }
    run.Cancellation.Dispose();

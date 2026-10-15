@@ -23,11 +23,12 @@ import zipfile
 from visible_host import VisibleHost
 from isolated_build_manager import IsolatedBuildManager
 from canvas_spec import expand_widgets
+from runtime_profile import RuntimeProfile, default_bin
 
 HERE = Path(__file__).resolve().parent
 NAMESPACE = '{http://schemas.flexem.com/fs/model/1}'
 SUPPORTED_PROTOCOLS = ('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
-DEFAULT_BIN = Path(r'C:\Program Files (x86)\Flexem\FStudio 3.x\Bin')
+DEFAULT_BIN = default_bin()
 
 
 def schema(props=None, required=()):
@@ -102,7 +103,7 @@ TOOLS += [
     tool('fstudio_visible_run_command','Disabled compatibility endpoint. Always returns BACKGROUND_ONLY without constructing or dispatching native commands. Use dedicated background build/page/canvas/model APIs; command discovery does not imply executable command access.',schema({'command':STR},['command'])),
     tool('fstudio_visible_save','Save the active workspace project through background native services. Returns asynchronous job ID; no execution-log window is required.',schema(),False),
     tool('fstudio_visible_job','Read status/result/error of an existing background host job. Poll the same ID; do not restart after a nonterminal observation.',schema({'job_id':STR},['job_id'])),
-    tool('fstudio_visible_start','Start FStudio with the local background host add-in, or reuse a verified running endpoint. The editor canvas can remain visible for drawing; no execution-log window is required. No administrator installation required.',schema(),False),
+    tool('fstudio_visible_start','Start the installed editor with the local host add-in, or reuse a verified endpoint. Optional project selects the initial workspace project only for a new process, avoiding automatic reopening of a busy previous project. Reusing a host does not switch its project; use visible_open_project. No administrator installation required.',schema({'project':STR}),False),
     tool('fstudio_visible_create_project','Create a new project through native HMIProjectCreator in the background host and open it in the editor. Uses the installed model template and refuses existing destinations. Returns asynchronous job ID.',schema({'name':KEY,'model':KEY},['name','model']),False),
     tool('fstudio_visible_output','Read native FStudio output categories including compiler messages.',schema()),
     tool('fstudio_visible_close_project','Close the active workspace project through background native services. While any open view is dirty the host refuses before calling native close, because the native save-changes dialog cannot be answered in background mode and the close job then never returns. Save first, or set discard_unsaved=true to skip the native window check and drop unsaved canvas changes.',schema({'discard_unsaved':{'type':'boolean'}}),False),
@@ -121,7 +122,7 @@ TOOLS += [
     tool('fstudio_canvas_state','Read the current native drawing canvas and prepared-draft state through the background host.',schema()),
     tool('fstudio_canvas_show','Show the existing workspace canvas window without activating it, opening settings, or generating mouse input. Restores a minimized canvas so native drawing updates can be observed. Does not bring an already visible window above other applications. Returns a host job and observed visibility/focus state.',schema(),False),
     tool('fstudio_address_configure_local','Configure a direct AddressInfo or AddressData from the active canvas or its draft using the current project native local-device bit/word register factory. Preserves the address data type; changes device, register and main index in one native undo transaction on an attached page. Rejects label/index/station-reference/offset/tag-reference addresses. Returns the actual device/register/index; does not read or write hardware.',schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295}},['ref','address']),False),
-    tool('fstudio_import_image','Import a local PNG/JPG/GIF/BMP file into a StaticPictureInfo on the active canvas or its draft by setting its NormalInfo.ImageData bytes (base64 over the local pipe) and ImageImportPath. The file is validated (existence, size limit 8 MiB, image magic), copied into the project HMI/Lib/ImportImage directory and rejected when the control already imports a file; the write uses the same native undo transaction path as model_set. The native serializer drops PictureOrigin for fresh imports, so compilation keeps reporting "请从文件或者图库导入图片。"; set repair_origin=true to also save, close the project, insert <PictureOrigin>File</PictureOrigin> after the ImageImportPath element in the affected page XML, and reopen the project in one call. Save afterwards to persist. No file dialog is opened; runtime rendering is not verified.',schema({'ref':STR,'file':STR,'repair_origin':{'type':'boolean','default':False}},['ref','file']),False),
+    tool('fstudio_import_image','Import a local PNG/JPG/GIF/BMP, up to 8 MiB, into an empty StaticPicture on the active page or its draft. Validate and copy the source into HMI/Lib/ImportImage. Elhart uses native LoadFromFile in an undo transaction, sets PictureOrigin=File and needs no XML repair. Legacy FStudio retains optional repair_origin=true save/close/XML/reopen behavior. Existing source pictures and conflicting resources are preserved by refusal. Save, reopen and compile; runtime rendering requires separate acceptance.',schema({'ref':STR,'file':STR,'repair_origin':{'type':'boolean','default':False}},['ref','file']),False),
     tool('fstudio_add_language','Add a project UI language through the native LanguageConfigurationService.AddItem with a standard .NET culture name (e.g. ja-JP), reusing the font of the first existing language configuration. Rejects duplicate cultures. Save the project to persist; the language appears in LanguageConfigInfo.cfg with its LCID and survives close/reopen. No settings dialog is opened; translation workflows are not part of this call.',schema({'culture':STR},['culture']),False),
     tool('fstudio_add_user_level','Add a project user level through the native UserLevelInfos.AddUserLevelInfo factory (level 1..255) with optional password and description; duplicate levels are rejected. The native configuration is saved to HMI/System/UserLevelConfigInfo.cfg immediately and verified by count; survives close/reopen. No settings dialog is opened; control authorization and runtime login behavior are not part of this call.',schema({'level':{'type':'integer','minimum':1,'maximum':255},'password':{'type':'string','maxLength':64},'description':{'type':'string','maxLength':128}},['level']),False),
     tool('fstudio_add_plan_task','Add a plan/schedule task through the native PlanTaskInfos collection (AddNew + Add) with a description, optional enable flag and start days, then save the native plan-task configuration file immediately. Returns the task count after insertion. Duplicate descriptions are not checked; each call adds one task. No settings dialog is opened; start/end time windows and execute actions are not configured by this call.',schema({'description':STR,'enable':{'type':'boolean'},'days':{'type':'integer','minimum':0,'maximum':255},'start_address':{'type':'integer','minimum':0,'maximum':4294967295},'enable_address':{'type':'integer','minimum':0,'maximum':4294967295}},['description']),False),
@@ -140,7 +141,7 @@ TOOLS += [
     tool('fstudio_build_status','Read a persistent isolated build by build_id. Includes compiler_success, native_result diagnostics, outputs directory and hashes, source_unchanged and cleanup_complete. Terminal states: completed, failed, cancelled, ui_required, cleanup_failed. completed alone does not prove compiler_success.',schema({'build_id':BUILD_ID},['build_id'])),
     tool('fstudio_build_diagnostics','Read the current native error-report service and existing build output without creating or opening an output/error window. This is a snapshot of shared native state; entries are not automatically attributed to a particular build.',schema()),
     tool('fstudio_canvas_configure_bit_switch','Initialize a SwitchInfo with an empty action list using a native KeyDown bit action. action is On, Off or Switch (toggle); address is an explicit local-device bit address. The native factory selects the local device and its first bit register; the response identifies both. Existing actions are preserved by rejecting nonempty lists. Works on a draft or a widget on the active canvas without opening settings; save to persist.',schema({'ref':STR,'action':{'type':'string','enum':['On','Off','Switch']},'address':{'type':'integer','minimum':0,'maximum':4294967295}},['ref','action','address']),False),
-    tool('fstudio_build_cancel','Request cancellation of an isolated build. Keep polling the same build_id until terminal and cleanup_complete. A completion racing with cancellation retains the actual native result. Finished tasks return their existing state.',schema({'build_id':BUILD_ID},['build_id']),False),
+    tool('fstudio_build_cancel','Cancel an owned isolated snapshot build. First request native token cancellation; if still active after three seconds, terminate only its private worker process tree. Keep polling the same build_id until terminal and cleanup_complete. Natural completion racing with cancellation retains its native result. Finished tasks return their existing state.',schema({'build_id':BUILD_ID},['build_id']),False),
     tool('fstudio_pages_list','List native pages of the active workspace project, including all page kinds, UUIDs, dimensions, file paths, opened and dirty states. The background page mutation/open APIs support only non-reserved Basic business pages.',schema()),
     tool('fstudio_page_create','Create and save a native Basic business page in the active project without opening settings or automatically opening the new canvas. name is required; kind may only be Basic. Optional integer width/height default to native dimensions and must satisfy the installed model bounds. Returns an asynchronous job with page metadata.',schema({'name':PAGE_NAME,'kind':{'type':'string','enum':['Basic'],'default':'Basic'},'width':PAGE_DIMENSION,'height':PAGE_DIMENSION},['name']),False),
     tool('fstudio_page_open','Open or activate a non-reserved Basic business page by UUID from pages_list. Uses the native page service with show_settings=false; no property window or mouse-drag input. Returns an asynchronous job with the opened page.',schema({'uuid':PAGE_UUID},['uuid']),False),
@@ -185,6 +186,28 @@ TOOLS += [
          schema({'page_uuid': PAGE_UUID, 'widgets': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': CANVAS_WIDGET},
                  'presets': {'type': 'object', 'maxProperties': 20, 'additionalProperties': schema(CANVAS_PRESET_FIELDS)}}, ['widgets']), False),
 ]
+TOOLS.append(tool('fstudio_canvas_configure_bit_indicator',
+    'Initialize an unconfigured SwitchInfo indicator with two native local-bit states and labels. '
+    'Preserves existing configured indicators by refusing replacement. Save and compile to persist; no runtime or hardware I/O.',
+    schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295},
+            'off_text':KEY,'on_text':KEY}, ['ref','address','off_text','on_text']), False))
+TOOLS.append(tool('fstudio_simulation_start',
+    'Start the installed offline simulator via native ISimulateOperation for the saved workspace project. '
+    'Requires clean views, forces offline mode, may compile and show native simulator UI. '
+    'Returns launch evidence only; no hardware I/O or visual/interaction acceptance is claimed.', schema(), False))
+TOOLS.append(tool('fstudio_simulation_state',
+    'Read cached offline simulator flags with observation time and newly observed FCS/FSGUI process candidates without waiting for UI. '
+    'Candidates do not prove ownership or correct rendering; no simulator is stopped.', schema()))
+TOOLS.append(tool('fstudio_canvas_configure_navigation',
+    'Initialize an empty SwitchInfo with a native KeyDown transition to an existing Basic page UUID and a label in every configured language. Existing actions are preserved by refusal. Save, reopen and compile; actual runtime transition remains a separate test.',
+    schema({'ref':STR,'target_uuid':PAGE_UUID,'text':KEY},['ref','target_uuid','text']),False))
+TOOLS.append(tool('fstudio_canvas_configure_word_indicator',
+    'Initialize an empty committed SwitchInfo as a local UInt16 word indicator: values 0 and 1 plus ShowErrorState fallback. Supply three 64x64 state images. Creates a native project graph, three graph/tag states, blank captions and square bounds. Existing conditions/actions and graph resources are protected. Save, reopen, compile and perform separate runtime acceptance.',
+    schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295},'files':{'type':'array','minItems':3,'maxItems':3,'items':STR}},['ref','address','files']),False))
+TOOLS.append(tool('fstudio_canvas_history','Read undo/redo entries of the active native canvas.',schema()))
+TOOLS.append(tool('fstudio_visible_contracts','Check required installed native type/method/constructor signatures on the editor UI thread, without modifying the project. compatible confirms reflection contracts only; runtime and UI behavior require separate tests.',schema()))
+TOOLS.append(tool('fstudio_canvas_undo','Undo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
+TOOLS.append(tool('fstudio_canvas_redo','Redo one native canvas history entry. Requires no uncommitted drawing drafts. Read a new snapshot afterward.',schema(),False))
 BY_NAME = {t['name']: t for t in TOOLS}
 
 
@@ -265,11 +288,12 @@ class NativeBridge:
 
 
 class FStudio:
-    def __init__(self, workspace, bin_dir):
+    def __init__(self, workspace, bin_dir, profile='auto'):
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.bin = bin_dir.resolve()
-        self.templates = self.bin.parent / 'Template/HMI/zh'
+        self.profile = RuntimeProfile.discover(self.bin, profile)
+        self.templates = self.profile.templates
         self.native = NativeBridge(self.bin)
         self.visible = VisibleHost(HERE/'artifacts/visible-host/endpoint.json')
         self.builds = IsolatedBuildManager(HERE,self.workspace,self.bin)
@@ -303,20 +327,26 @@ class FStudio:
         return name
 
     def _template(self, model):
+        model = self.profile.resolve_model(model)
         path = self.templates / (self.model_name(model) + '.tpl')
         if not path.is_file(): raise ValueError('Installed model template not found')
         return path
 
     def list_models(self):
         models = []
+        installed = self.profile.model_catalog()
         for tpl in sorted(self.templates.glob('F[0-9]*.tpl')):
+            if self.profile.name == 'elhart' and tpl.stem not in installed:
+                continue
             try:
                 with zipfile.ZipFile(tpl, metadata_encoding='gbk') as z:
                     for n in z.namelist():
                         if n.startswith('HMI/Frame/Basic/') and n.endswith('.wcfg'):
                             r = ET.fromstring(z.read(n))
                             if r.findtext(NAMESPACE+'Id') == '1':
-                                models.append({'model': tpl.stem, 'width': int(r.findtext(NAMESPACE+'Width')), 'height': int(r.findtext(NAMESPACE+'Height'))}); break
+                                info = dict(installed.get(tpl.stem, {}), model=tpl.stem,
+                                            width=int(r.findtext(NAMESPACE+'Width')), height=int(r.findtext(NAMESPACE+'Height')))
+                                models.append(info); break
             except (zipfile.BadZipFile, ET.ParseError, UnicodeError, ValueError): continue
         return {'models': models}
 
@@ -349,6 +379,7 @@ class FStudio:
         finally: marker.unlink(missing_ok=True)
 
     def create_project(self, name, model):
+        model = self.profile.resolve_model(model)
         dest = self.inside(self.file_name(name)); template = self._template(model)
         if dest.exists(): raise ValueError('Project destination already exists; choose another name')
         stage = self.inside('.create-' + uuid.uuid4().hex)
@@ -467,8 +498,17 @@ class FStudio:
     def visible_state(self):
         return self.visible.read('state')
 
-    def visible_start(self):
-        return self.visible.start(self.bin)
+    def visible_start(self, project=None):
+        settings = json.loads((HERE/'artifacts/visible-addin/host-settings.json').read_text(encoding='utf-8-sig'))
+        if Path(settings['workspace']).resolve() != self.workspace:
+            raise ValueError('Server and host workspaces differ; run install-visible-host.ps1 -Workspace with the server workspace')
+        if Path(settings.get('bin', self.bin)).resolve() != self.bin:
+            raise ValueError('Server and host installation paths differ; rebuild the host for this installation')
+        initial_project=None
+        if project is not None:
+            folder=self.project(project)
+            initial_project=next(folder.glob('*.fsprj'))
+        return self.visible.start(self.bin, project=initial_project)
 
     @staticmethod
     def check_native_project_directory(directory):
@@ -480,15 +520,30 @@ class FStudio:
     def visible_create_project(self, name, model):
         """校验目标后提交原生创建任务；路径超限时不写文件、不调用宿主。"""
         self.file_name(name)
+        model = self.profile.resolve_model(model)
         dest = self.inside(name)
         self.check_native_project_directory(dest)
         if dest.exists(): raise ValueError('Destination already exists')
         with zipfile.ZipFile(self._template(model),metadata_encoding='gbk') as template:
             xml = template.read('HMI/System/ConnectInfo.cfg').decode('utf-8-sig')
-        return self.visible.request('create_project',name=name,model=model,template_xml=xml)
+        identity = ET.fromstring(xml)
+        if identity.findtext(NAMESPACE+'Name') != model:
+            raise ValueError('Template model identity mismatch')
+        installed = self.profile.model_catalog().get(model, {})
+        identifier = identity.findtext(NAMESPACE+'ID')
+        if installed and str(installed['id']) != identifier:
+            raise ValueError('Template model ID differs from installed catalog')
+        return self.visible.request('create_project', name=name, model=model, template_xml=xml,
+                                    model_id=identifier, model_alias=installed.get('display_name',model))
 
     def visible_output(self):
         return self.visible.read('output')
+
+    def simulation_start(self):
+        return self.visible.request('simulation_start')
+
+    def simulation_state(self):
+        return self.visible.read('simulation_state')
 
     def visible_close_project(self, discard_unsaved=False):
         return self.visible.request('close_project', discard_unsaved=bool(discard_unsaved))
@@ -652,21 +707,24 @@ class FStudio:
         if not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff')
                 or data.startswith(b'GIF87a') or data.startswith(b'GIF89a') or data.startswith(b'BM')):
             raise ValueError('unsupported image format; expected PNG, JPG, GIF or BMP')
-        state = self.visible.read('state')
+        state = self._wait_job(self.visible.read('state'))
         project_file = state.get('project') if isinstance(state, dict) else None
         if not project_file:
             raise RuntimeError('No active project; open the target project before importing an image')
         project_dir = Path(project_file).resolve().parent
         import_dir = project_dir / 'HMI' / 'Lib' / 'ImportImage'
         target = import_dir / path.name
-        normal = self.visible.read('read_member', ref=ref, member='NormalInfo')
+        normal = self._wait_job(self.visible.read('read_member', ref=ref, member='NormalInfo'))
         normal_ref = normal.get('value', {}).get('$ref') if isinstance(normal, dict) else None
         if not normal_ref:
             raise ValueError('ref does not expose a NormalInfo object; expected a StaticPictureInfo handle')
-        existing = self.visible.read('read_member', ref=normal_ref, member='ImageImportPath')
+        existing = self._wait_job(self.visible.read('read_member', ref=normal_ref, member='ImageImportPath'))
         existing_path = existing.get('value') if isinstance(existing, dict) else None
         if existing_path:
             raise ValueError('this picture already imports a file; import into an empty StaticPicture control')
+        if self.profile.name=='elhart':
+            origin=self._wait_job(self.visible.read('read_member',ref=normal_ref,member='PictureOrigin'))
+            if origin.get('value')!='None':raise ValueError('Picture already has a source; preserve it')
         # 先校验控件，再创建文件；已有同名资源只能复用相同内容，不能覆盖其他控件的图片。
         if target.resolve() != path:
             if target.exists():
@@ -677,6 +735,13 @@ class FStudio:
                 # 排他创建防止校验之后其他请求写入同名文件。
                 with target.open('xb') as stream:
                     stream.write(data)
+        if self.profile.name=='elhart':
+            job=self.visible.request('drawing_import_image',ref=ref,file=str(target),
+                data=base64.b64encode(data).decode('ascii'))
+            native=self._wait_job(job)
+            return dict(imported_file=str(target),bytes=len(data),job=job,native=native,
+                repair_origin={'required':False,'method':'native_LoadFromFile'},
+                note='Native import sets PictureOrigin. Save/reopen and compile before acceptance; runtime rendering remains unverified.')
         job = self.visible.request('set_members', changes=[
             {'ref': normal_ref, 'member': 'ImageData', 'value': base64.b64encode(data).decode('ascii')},
             {'ref': normal_ref, 'member': 'ImageImportPath', 'value': str(target)},
@@ -688,6 +753,7 @@ class FStudio:
                               '<PictureOrigin>File</PictureOrigin> after the ImageImportPath element. For automatic '
                               'repair, pass repair_origin=true on the initial import; populated controls reject reimport.')
             return result
+        self._wait_job(job)
         # 自动修补：保存 -> 关闭 -> 修补页面 XML -> 重开
         save_job = self.visible.request('save_project')
         self._wait_job(save_job)
@@ -745,6 +811,20 @@ class FStudio:
 
     def canvas_configure_bit_switch(self, **args):
         return self.visible.request('drawing_configure_bit_switch', **args)
+
+    def canvas_configure_bit_indicator(self, **args):
+        return self.visible.request('drawing_configure_bit_indicator', **args)
+
+    def canvas_configure_navigation(self, **args):
+        return self.visible.request('drawing_configure_navigation', **args)
+
+    def canvas_configure_word_indicator(self, **args):
+        return self.visible.request('drawing_configure_word_indicator', **args)
+
+    def canvas_history(self):return self.visible.read('drawing_history')
+    def visible_contracts(self):return self.visible.read('contracts')
+    def canvas_undo(self):return self.visible.request('drawing_undo')
+    def canvas_redo(self):return self.visible.request('drawing_redo')
 
     def build_cancel(self, build_id):
         return self.builds.cancel(build_id)
@@ -924,7 +1004,7 @@ class FStudio:
                 attrs = element.attrib
                 if any(k.lower() in ('command','class','commandid') for k in attrs):
                     commands.append({'manifest':str(file.relative_to(self.bin.parent)),'element':element.tag,'attributes':dict(attrs)})
-        return {'mcp_tools':[t['name'] for t in TOOLS], 'native_types':self.catalog(limit=1)['total'],
+        result = {'mcp_tools':[t['name'] for t in TOOLS], 'native_types':self.catalog(limit=1)['total'],
                 'installed_declarations':commands, 'declarations_status':'metadata_only_not_callable',
                 'coverage':{'dto_read_and_leaf_patch':'implemented_native_roundtrip','convenience_widget_creation':['text','rectangle','numeric_display'],
                 'convenience_widget_gui_compatibility':'not_verified_for_all_models',
@@ -949,10 +1029,24 @@ class FStudio:
                 'visible_prefix':'compatibility_names_for_background_host',
                 'legacy_native_commands':'disabled_BACKGROUND_ONLY_no_dispatch',
                 'offline_edits':'close_target_project_before_modifying_files'}}
+        # Upstream certificates describe a different editor version, not this installation.
+        result['upstream_validation_baseline'] = result.pop('validation_baseline')
+        result['upstream_coverage'] = result.pop('coverage')
+        version = self.native.call('health')['dto_version']
+        result['runtime_profile'] = self.profile.describe(version)
+        result['coverage'] = {name: 'implemented_not_behavior_verified_for_this_installation'
+                              for name in result['upstream_coverage']}
+        result['coverage']['simulation'] = 'offline_native_launch_implemented_runtime_acceptance_not_verified'
+        result['coverage']['hardware'] = 'not_verified'
+        return result
 
     def call(self, name, args):
         if name == 'fstudio_health':
-            return dict(self.native.call('health'), workspace=str(self.workspace), supported_widget_kinds=['text','rectangle','numeric_display'])
+            health = self.native.call('health')
+            return dict(health, workspace=str(self.workspace), runtime_profile=self.profile.describe(health['dto_version']),
+                        supported_widget_kinds=['text','rectangle','numeric_display'])
+        if hasattr(self, 'profile') and not BY_NAME[name]['annotations']['readOnlyHint']:
+            self.profile.require_supported(self.native.call('health')['dto_version'])
         return getattr(self, name.removeprefix('fstudio_'))(**args)
 
 
@@ -983,7 +1077,7 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'fstudio-dll-mcp','version':'0.4.0'},
+                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.5.0'},
                           'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
@@ -1009,11 +1103,12 @@ def serve(service):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--workspace', type=Path, default=HERE/'projects')
-    parser.add_argument('--fstudio-bin', type=Path, default=DEFAULT_BIN)
+    parser.add_argument('--profile', choices=('auto','elhart','fstudio'), default='auto')
+    parser.add_argument('--fstudio-bin', '--studio-bin', dest='fstudio_bin', type=Path)
     args = parser.parse_args()
     if hasattr(sys.stdin, 'reconfigure'): sys.stdin.reconfigure(encoding='utf-8')
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8')
-    service = FStudio(args.workspace, args.fstudio_bin)
+    service = FStudio(args.workspace, args.fstudio_bin or default_bin(args.profile), args.profile)
     try: serve(service)
     finally: service.native.close()
 
