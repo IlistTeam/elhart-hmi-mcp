@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-MCP_FILES = ('server.py', 'runtime_profile.py', 'canvas_spec.py', 'visible_host.py', 'build_snapshot.py', 'desktop_process.py',
+MCP_FILES = ('panel_download.py','panel_download_job.py','loader_windows.py','server.py', 'runtime_profile.py', 'canvas_spec.py', 'visible_host.py', 'build_snapshot.py', 'desktop_process.py',
              'isolated_build_job.py', 'isolated_build_manager.py', 'isolated_compiler.py',
              'build.ps1', 'install-visible-host.ps1', 'mcp.example.json')
 
@@ -30,7 +30,7 @@ def package_files(profile='elhart'):
                 raise ValueError('Unexpected skill resource: ' + str(path))
             files['fstudio-skills/' + path.relative_to(skill).as_posix()] = path
     else:
-        for name in ('LICENSE','README.md','PLAN.md','docs/elhart-installation.md','docs/elhart-validation.md','docs/elhart-capabilities.md','docs/elhart-manual-acceptance.md','docs/elhart-final-results.md'):
+        for name in ('LICENSE','README.md','PLAN.md','docs/elhart-installation.md','docs/panel-download.md','docs/elhart-validation.md','docs/elhart-capabilities.md','docs/elhart-manual-acceptance.md','docs/elhart-final-results.md'):
             files[prefix+'/'+name]=ROOT/name
     for name in MCP_FILES:
         files[prefix+'/' + name] = ROOT/name
