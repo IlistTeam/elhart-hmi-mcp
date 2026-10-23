@@ -8,7 +8,7 @@ from datetime import datetime,timezone
 from desktop_process import DesktopProcess
 from isolated_build_manager import launch_lock
 from panel_download import PanelDownloadManager,read
-from loader_windows import LoaderControls,usb_devices
+from loader_windows import LoaderControls,usb_devices,loader_processes
 from build_snapshot import input_manifest
 
 
@@ -47,6 +47,7 @@ def run(request_path,process_factory=DesktopProcess,controls_factory=LoaderContr
         else:
             # Revalidate the exact present USB instance immediately before dispatch.
             if [d.casefold() for d in usb_devices()]!=[verified['device_id'].casefold()]:raise RuntimeError('USB target changed')
+            if [p['pid'] for p in loader_processes()]!=[proc.pid]:raise RuntimeError('FSTools process set changed before transfer')
             # Publish BEFORE dispatch so interruption can never be reported safe to retry.
             publish(status='transferring',transmission_started=True)
             controls.start();deadline=time.monotonic()+600

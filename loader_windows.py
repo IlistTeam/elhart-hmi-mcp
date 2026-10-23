@@ -4,6 +4,32 @@ from ctypes import wintypes as W
 import time
 
 
+def loader_processes():
+    """Observe all FSTools instances, including workers orphaned by a crashed runner."""
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    class Entry(ctypes.Structure):
+        _fields_=[('dwSize',W.DWORD),('cntUsage',W.DWORD),('pid',W.DWORD),
+                  ('heap',ctypes.c_size_t),('module',W.DWORD),('threads',W.DWORD),
+                  ('parent_pid',W.DWORD),('priority',W.LONG),('flags',W.DWORD),('exe',W.WCHAR*260)]
+    kernel.CreateToolhelp32Snapshot.argtypes=[W.DWORD,W.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype=W.HANDLE
+    kernel.Process32FirstW.argtypes=[W.HANDLE,ctypes.POINTER(Entry)]
+    kernel.Process32NextW.argtypes=[W.HANDLE,ctypes.POINTER(Entry)]
+    kernel.CloseHandle.argtypes=[W.HANDLE]
+    snapshot=kernel.CreateToolhelp32Snapshot(2,0)
+    if snapshot==ctypes.c_void_p(-1).value:raise ctypes.WinError(ctypes.get_last_error())
+    result=[]
+    try:
+        entry=Entry();entry.dwSize=ctypes.sizeof(entry)
+        present=kernel.Process32FirstW(snapshot,ctypes.byref(entry))
+        while present:
+            if entry.exe.casefold()=='fstools.exe':result.append(dict(pid=entry.pid,parent_pid=entry.parent_pid))
+            present=kernel.Process32NextW(snapshot,ctypes.byref(entry))
+        if ctypes.get_last_error()!=18:raise ctypes.WinError(ctypes.get_last_error())
+    finally:kernel.CloseHandle(snapshot)
+    return result
+
+
 def usb_devices():
     setup=ctypes.WinDLL('setupapi',use_last_error=True)
     class Info(ctypes.Structure):
