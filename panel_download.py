@@ -51,8 +51,13 @@ class PanelDownloadManager:
         files=input_manifest(folder)
         if str(folder.resolve()).casefold()!=str(Path(outputs['directory']).resolve()).casefold() or files!=outputs['files']:
             raise ValueError('Build outputs changed')
-        for name in ('fshmi.bin','fshmi.logo'):
+        for name in ('fshmi.bin','fshmi.logo','info.dat'):
             if not files.get(name,{}).get('size'):raise ValueError('Missing compiled '+name)
+        packaging_file=job/'packaging.json'
+        if not packaging_file.is_file():raise ValueError('Build lacks mandatory native packaging; rebuild before download')
+        packaging=read(packaging_file)
+        if packaging.get('status')!='completed' or packaging.get('outputs')!=files or files['info.dat']['size']!=1024:
+            raise ValueError('Native packaging receipt does not match download files')
         connection=ET.parse(project.parent/'HMI/System/ConnectInfo.cfg').getroot()
         # Installed ECP-10 model uses HMI ID 2050. Reject other targets in this pilot.
         if connection.findtext('{http://schemas.flexem.com/fs/model/1}ID')!='2050':

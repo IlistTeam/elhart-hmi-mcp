@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-MCP_FILES = ('panel_download.py','panel_download_job.py','loader_windows.py','server.py', 'runtime_profile.py', 'canvas_spec.py', 'visible_host.py', 'build_snapshot.py', 'desktop_process.py',
+MCP_FILES = ('native_packaging.py','scripts/package_native_project.ps1','panel_download.py','panel_download_job.py','loader_windows.py','server.py', 'runtime_profile.py', 'canvas_spec.py', 'visible_host.py', 'build_snapshot.py', 'desktop_process.py',
              'isolated_build_job.py', 'isolated_build_manager.py', 'isolated_compiler.py',
              'build.ps1', 'install-visible-host.ps1', 'mcp.example.json')
 

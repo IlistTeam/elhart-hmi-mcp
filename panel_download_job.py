@@ -14,7 +14,7 @@ from build_snapshot import input_manifest
 
 def run(request_path,process_factory=DesktopProcess,controls_factory=LoaderControls):
     path=Path(request_path).resolve();directory=path.parent;request=read(path)
-    state=dict(download_id=directory.name,status='validating',hardware_success=None,transmission_started=False,cleanup_complete=False,dry_run=request['dry_run'])
+    state=dict(download_id=directory.name,status='validating',hardware_success=None,runtime_success=None,acceptance_passed=None,transmission_started=False,cleanup_complete=False,dry_run=request['dry_run'])
     proc=None;controls=None;guards=ExitStack()
     def publish(**changes):
         state.update(changes);state['updated_utc']=datetime.now(timezone.utc).isoformat()

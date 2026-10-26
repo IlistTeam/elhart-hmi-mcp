@@ -20,10 +20,12 @@ class PreflightTests(unittest.TestCase):
         self.id='a'*32;self.job=self.root/'artifacts/isolated-jobs'/self.id;self.job.mkdir(parents=True)
         self.outputs=self.job/'outputs';self.outputs.mkdir()
         for name in ('fshmi.bin','fshmi.logo'):(self.outputs/name).write_bytes(b'compiled')
+        (self.outputs/'info.dat').write_bytes(bytes(1024))
         self.bin=self.root/'bin';self.bin.mkdir();(self.bin/'FSTools.exe').write_bytes(b'test binary')
         self.write('status.json',dict(status='completed',compiler_success=True,cleanup_complete=True,project=str(self.project/'p.fsprj')))
         self.write('snapshot.json',dict(source=str(self.project/'p.fsprj'),inputs=input_manifest(self.project)))
         self.write('outputs.json',dict(directory=str(self.outputs),files=input_manifest(self.outputs)))
+        self.write('packaging.json',dict(status='completed',outputs=input_manifest(self.outputs)))
         self.manager=dl.PanelDownloadManager(self.root,self.root/'projects',self.bin)
         self.device='USB\\VID_0528&PID_A4A8\\TEST'
         self.hashpatch=patch.object(dl,'LOADER_SHA256',dl.digest(self.bin/'FSTools.exe'));self.hashpatch.start();self.addCleanup(self.hashpatch.stop)
@@ -60,6 +62,16 @@ class PreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'workspace'):self.check()
     def test_invalid_id(self):
         with self.assertRaises(ValueError):self.manager.preflight('../escape',self.device)
+    def test_raw_build_without_packaging_is_rejected(self):
+        (self.job/'packaging.json').unlink()
+        with self.assertRaisesRegex(ValueError,'mandatory native packaging'):self.check()
+    def test_packaging_receipt_must_bind_all_outputs(self):
+        self.write('packaging.json',dict(status='completed',outputs={}))
+        with self.assertRaisesRegex(ValueError,'packaging receipt'):self.check()
+    def test_missing_auth_sidecar_is_rejected(self):
+        (self.outputs/'info.dat').unlink();files=input_manifest(self.outputs)
+        self.write('outputs.json',dict(directory=str(self.outputs),files=files));self.write('packaging.json',dict(status='completed',outputs=files))
+        with self.assertRaisesRegex(ValueError,'info.dat'):self.check()
     def test_existing_loader_rejected_without_touching_it(self):
         self.processes.return_value=[dict(pid=99,parent_pid=88)]
         with self.assertRaisesRegex(RuntimeError,'Existing FSTools'):self.check()
