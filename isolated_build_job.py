@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from build_snapshot import BuildSnapshot, prune_recent_projects
 from isolated_compiler import IsolatedCompiler
 from runtime_profile import RuntimeProfile
+from native_packaging import package_snapshot
 
 
 def publish_status(directory,state):
@@ -72,6 +73,10 @@ def run_job(request_file):
                 compiler_success=result.get('compiler_success'),native_result=result)
         compiler.close()
         compiler=None
+        if result.get('compiler_success') is True and terminal=='completed' and profile.name=='elhart':
+            persist(status='packaging')
+            packaging=package_snapshot(snapshot,request['bin'])
+            persist(packaging=packaging)
         outputs=snapshot.archive_outputs()
         persist(outputs=outputs,source_unchanged=snapshot.source_unchanged())
     except BaseException:

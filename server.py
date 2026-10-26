@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from visible_host import VisibleHost
 from isolated_build_manager import IsolatedBuildManager
+from panel_download import PanelDownloadManager
 from canvas_spec import expand_widgets
 from runtime_profile import RuntimeProfile, default_bin
 
@@ -137,6 +138,10 @@ TOOLS += [
     tool('fstudio_sampling_update','Update a sampling group name and/or cycle (ms) by sample_id through the native PropertyInfo and save the configuration file immediately. Addresses and channels are not changed by this call; no dialog or hardware IO.',schema({'sample_id':PAGE_UUID,'name':PAGE_NAME,'cycle_ms':{'type':'integer','minimum':1,'maximum':4294967295}},['sample_id']),False),
 ]
 TOOLS += [
+    tool('fstudio_download_devices','List present ELHART loader USB instances without contacting the panel. Pilot supports exactly one VID0528/PIDA4A8 device; this does not verify the physical panel model.',schema()),
+    tool('fstudio_download_preflight','Verify a successful isolated build, unchanged saved inputs and outputs, installed FSTools hash, ECP-10 project profile and exact present USB instance. Does not transmit or start FSTools.',schema({'build_id':BUILD_ID,'device_id':STR},['build_id','device_id'])),
+    tool('fstudio_download_start','Stage a verified natively packaged isolated build and drive owned FSTools on a private desktop. Defaults to dry_run=true (no Download command). Set false only for an authorized physical panel write. Preserves current IP and disables force/delete/data replacement. Returns download_id; poll download_status until cleanup_complete. No automatic retries or dialog confirmations. ECP-10 USB transfer and application startup verified for one project; native transfer success does not by itself verify runtime startup.',schema({'build_id':BUILD_ID,'device_id':STR,'dry_run':{'type':'boolean'}},['build_id','device_id']),False),
+    tool('fstudio_download_status','Read the durable download journal, progress, native result and cleanup. Only explicit native Download Success confirms transfer; queued/ready/dry_run do not. recovery_required prevents further jobs; never retry an uncertain physical transfer automatically.',schema({'download_id':BUILD_ID},['download_id'])),
     tool('fstudio_build_start','Compile the saved active workspace project snapshot in an owned private-desktop process. Save first. Returns build_id directly; poll build_status. Canvas editing can continue; source_unchanged reports saved-file changes. Outputs are archived separately, not installed into the editor project. No desktop switching.',schema(),False),
     tool('fstudio_build_status','Read a persistent isolated build by build_id. Includes compiler_success, native_result diagnostics, outputs directory and hashes, source_unchanged and cleanup_complete. Terminal states: completed, failed, cancelled, ui_required, cleanup_failed. completed alone does not prove compiler_success.',schema({'build_id':BUILD_ID},['build_id'])),
     tool('fstudio_build_diagnostics','Read the current native error-report service and existing build output without creating or opening an output/error window. This is a snapshot of shared native state; entries are not automatically attributed to a particular build.',schema()),
@@ -297,6 +302,7 @@ class FStudio:
         self.native = NativeBridge(self.bin)
         self.visible = VisibleHost(HERE/'artifacts/visible-host/endpoint.json')
         self.builds = IsolatedBuildManager(HERE,self.workspace,self.bin)
+        self.downloads = PanelDownloadManager(HERE,self.workspace,self.bin)
 
     def inside(self, path):
         path = Path(path)
@@ -806,6 +812,17 @@ class FStudio:
     def build_status(self, build_id):
         return self.builds.status(build_id)
 
+    def download_devices(self):return self.downloads.devices()
+
+    def download_preflight(self, build_id, device_id):
+        result=self.downloads.preflight(build_id,device_id)
+        return {key:value for key,value in result.items() if key not in ('inputs','outputs')}
+
+    def download_start(self, build_id, device_id, dry_run=True):
+        return self.downloads.start(build_id,device_id,dry_run=dry_run)
+
+    def download_status(self, download_id):return self.downloads.status(download_id)
+
     def build_diagnostics(self):
         return self.visible.read('build_diagnostics')
 
@@ -1018,7 +1035,7 @@ class FStudio:
                 'compile':'background_BuildAsync_F010_native_compiler_success_no_dialog_foreground_preserved_verified',
                 'compile_cancel':'cancellation_and_owned_process_cleanup_verified',
                 'simulation':'background_api_not_implemented_end_to_end_not_verified',
-                'download':'native_command_discovery_only','hardware':'not_verified'},
+                'download':'usb_ecp10_packaged_fstools_transfer_verified','hardware':'ecp10_usb_hmi104_startup_user_verified_other_scenarios_unverified'},
                 'validation_baseline':{'fstudio_version':'3.0.15685.0','model':'F010',
                 'scope':'representative_configurations_not_all_modes_or_hardware_runtime',
                 'drawing_tools_exercised':52,'drawing_tools_compile_passed':42,
@@ -1077,7 +1094,7 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.5.0'},
+                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.6.0'},
                           'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
