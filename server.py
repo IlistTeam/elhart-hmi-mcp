@@ -1094,7 +1094,7 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.5.0'},
+                          'serverInfo': {'name':'elhart-hmi-mcp' if getattr(getattr(service,'profile',None),'name',None)=='elhart' else 'fstudio-dll-mcp','version':'0.6.0'},
                           'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
