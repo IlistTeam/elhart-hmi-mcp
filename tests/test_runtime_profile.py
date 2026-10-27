@@ -10,7 +10,7 @@ from runtime_profile import RuntimeProfile
 class RuntimeProfileTests(unittest.TestCase):
     def test_oem_allowlist_alias_resolution_and_overlay(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             catalog = root/'Device/HMI'
             (catalog/'Custom').mkdir(parents=True)
             (catalog/'Custom/119.xml').write_text('''<HmiOemConfig>
