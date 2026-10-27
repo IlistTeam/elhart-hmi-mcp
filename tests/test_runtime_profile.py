@@ -28,7 +28,7 @@ class RuntimeProfileTests(unittest.TestCase):
             self.assertEqual(set(models), {'F010'})
             self.assertEqual(models['F010']['display_name'], 'ECP10')
             self.assertEqual((models['F010']['width'], models['F010']['height']), (1024, 768))
-            self.assertEqual(models['F010']['oem_overlay'], str(overlay))
+            self.assertTrue(Path(models['F010']['oem_overlay']).samefile(overlay))
             self.assertEqual(profile.templates, root/'Template/HMI/zh')
             self.assertEqual(profile.resolve_model('ECP10'), 'F010')
             with self.assertRaisesRegex(ValueError, 'missing or ambiguous'):

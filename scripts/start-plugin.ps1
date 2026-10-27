@@ -26,9 +26,26 @@ foreach ($taskArtifact in @('artifacts\FStudioBridge.exe', 'artifacts\visible-ad
     }
 }
 $taskHost = Get-Content -LiteralPath (Join-Path $taskRoot 'artifacts\visible-addin\host-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-if ([IO.Path]::GetFullPath($taskHost.workspace).TrimEnd('\') -ne $taskWorkspace -or
-    [IO.Path]::GetFullPath($taskHost.bin).TrimEnd('\') -ne [IO.Path]::GetFullPath($taskSettings.studio_bin).TrimEnd('\') -or
-    $taskHost.profile -ne 'elhart') { throw 'Server and native host settings differ. Repeat setup for the same workspace and installation.' }
+if ($taskHost.profile -ne 'elhart') { throw 'Native host profile must be elhart.' }
+# samefile handles Windows 8.3 aliases and junctions. Lexical path comparison
+# rejects valid runner/user profiles and can miss a workspace junction into cache.
+$taskCheckCode = @'
+import os, sys
+root, workspace, host_workspace, studio_bin, host_bin = sys.argv[1:]
+root, workspace = os.path.realpath(root), os.path.realpath(workspace)
+try:
+    inside = os.path.normcase(os.path.commonpath([root, workspace])) == os.path.normcase(root)
+except ValueError:
+    inside = False
+if inside:
+    print('Workspace must be outside the plugin cache.', file=sys.stderr)
+    sys.exit(2)
+if not os.path.samefile(workspace, host_workspace) or not os.path.samefile(studio_bin, host_bin):
+    print('Server and native host settings differ. Repeat setup for the same workspace and installation.', file=sys.stderr)
+    sys.exit(2)
+'@
+& $taskSettings.python -c $taskCheckCode $taskRoot $taskSettings.workspace $taskHost.workspace $taskSettings.studio_bin $taskHost.bin
+if ($LASTEXITCODE -ne 0) { throw 'ELHART path validation failed.' }
 $env:PYTHONUTF8 = '1'
 & $taskSettings.python -u (Join-Path $taskRoot 'server.py') --workspace $taskWorkspace --profile elhart --studio-bin $taskSettings.studio_bin
 exit $LASTEXITCODE

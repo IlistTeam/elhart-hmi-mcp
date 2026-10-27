@@ -10,6 +10,10 @@
   round-trip, отказ повреждённому primitive и перезаписи существующего результата.
 - `quick_validate.py` для bundled-навыка: успешно.
 - Существующие проверки старого FStudio ZIP прошли после переноса upstream-навыка.
+- Windows CI выявил сравнение длинного пути профиля с его 8.3-алиасом.
+  Launcher теперь проверяет идентичность workspace/Bin через `os.path.samefile`
+  и физическую границу кэша через `realpath`; тест пути OEM overlay также
+  проверяет идентичность файла вместо написания пути.
 - `git diff --check`: успешно.
 
 `test_system_validation.py` и `test_control_validation.py` запущены, но не прошли:
