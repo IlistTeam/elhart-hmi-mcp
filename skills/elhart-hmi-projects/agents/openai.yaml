@@ -1,0 +1,4 @@
+interface:
+  display_name: "Проекты ELHART HMI"
+  short_description: "Создание и проверка проектов ELHART HMI Soft"
+  default_prompt: "Используй $elhart-hmi-projects, чтобы создать проект визуализации ELHART HMI Soft с рабочим демо и проверкой формата."

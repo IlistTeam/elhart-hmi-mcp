@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "elhart": {
+      "type": "stdio",
+      "command": "powershell.exe",
+      "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${PLUGIN_ROOT}/scripts/start-plugin.ps1"]
+    }
+  }
+}

@@ -21,7 +21,7 @@ def package_files(profile='elhart'):
     prefix='elhart-hmi-mcp' if profile=='elhart' else 'fstudio-skills/mcp'
     files = {}
     if profile=='fstudio':
-        skill = ROOT/'skills/fstudio-skills'
+        skill = ROOT/'upstream/fstudio-skills'
         files['fstudio-skills/LICENSE'] = ROOT/'LICENSE'
         for path in sorted(skill.rglob('*')):
             if not path.is_file() or '__pycache__' in path.parts:

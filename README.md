@@ -74,6 +74,21 @@ HMI1.04 на физической панели проверены 26 октяб�
 
 ## Среда разработки
 
+### Устанавливаемый плагин IlistTeam
+
+Плагин **ELHART HMI** 0.6.0 объединяет MCP и полный навык
+`elhart-hmi-projects`. [Установка, настройка и обновление](docs/PLUGIN.md).
+
+```powershell
+codex plugin marketplace add IlistTeam/plugin-marketplace
+codex plugin add elhart-hmi@ilistteam
+```
+
+Затем выполните `scripts/setup-plugin.ps1` из установленной копии, выбрав
+короткий workspace вне кэша и настоящий Python 3.11+. Setup не запускает
+редактор или загрузку в панель. Прежняя отдельная установка MCP сохранена ниже;
+не подключайте оба варианта одновременно к одному редактору.
+
 - Windows с установленным ELHART HMI Soft; первая целевая версия — 3.0.15569.0.
 - Python 3.11 или новее.
 - .NET Framework 4.x и компилятор x86.
@@ -98,14 +113,16 @@ HMI1.04 на физической панели проверены 26 октяб�
 | src/ | C#-мост, модели, плагин и сборка |
 | tests/ | Регрессионные проверки исходного MCP |
 | docs/ | Подробные инструкции оригинального проекта |
-| skills/fstudio-skills/ | Исходный навык FStudio |
+| skills/elhart-hmi-projects/ | Рабочий навык Elhart со справочниками, проверками и примером |
+| upstream/fstudio-skills/ | Сохранённый исходный навык FStudio вне автоподключения плагина |
 | [README.upstream.zh-CN.md](README.upstream.zh-CN.md) | Сохранённый README оригинала на китайском языке |
 
 Документация оригинала описывает FStudio. Её команды, пути и результаты
 испытаний нельзя автоматически переносить на Elhart.
 
-Наш навык и существующие проверки находятся в отдельном репозитории
+В плагин включена копия навыка и проверок из
 [IlistTeam/elhart-hmi-projects](https://github.com/IlistTeam/elhart-hmi-projects).
+Её происхождение и дальнейшее сопровождение описаны в [PLUGIN.md](docs/PLUGIN.md).
 
 ## Работа с Git
 

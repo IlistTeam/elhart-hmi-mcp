@@ -1,0 +1,17 @@
+{
+  "name": "elhart-hmi",
+  "version": "0.6.0",
+  "description": "ELHART HMI native project skill and local Windows MCP for ECP panels.",
+  "author": { "name": "IlistTeam and FStudio_MCP contributors" },
+  "repository": "https://github.com/IlistTeam/elhart-hmi-mcp",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "ELHART HMI",
+    "shortDescription": "Нативные проекты ELHART HMI Soft и локальный MCP",
+    "developerName": "IlistTeam",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"]
+  }
+}

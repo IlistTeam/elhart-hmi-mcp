@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-06",
+  "source_project": "SLM_Powder_Loader_ECP10 (native internal-memory demo)",
+  "version": "ELHART HMI Soft 3.0.15569.0",
+  "profile": "2050/F010/ECP10",
+  "resolution": [
+    1024,
+    768
+  ],
+  "mode": "internal-memory SLM demo",
+  "files": 573,
+  "sha256": "bcdffc10f6681419c9e9c61ab84fdd4b8d72bdb8a849a9fe9b60d8a3a69fad5a",
+  "checked_native_windows": 40,
+  "full_gui_compilation_of_ECP10_version_verified": false,
+  "simulator_of_ECP10_version_verified": false,
+  "excluded": [
+    "Bin",
+    "Subbin",
+    "temp",
+    "Validation",
+    "Concepts",
+    "Preview",
+    "Source",
+    "old 1024x600 generators"
+  ],
+  "known_timing_limit": "Fractional display follows wall-clock slot; see references/demo-runtime.md"
+}
